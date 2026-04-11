@@ -172,17 +172,21 @@ body {
 .time-rounded-val { font-weight: 800; color: #2b6cb0; font-family: monospace; font-size: 15px; }
 @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
 /* ===== FABボタン ===== */
-.fab { position: fixed; bottom: 20px; right: 20px; z-index: 100; }
+.fab { text-align: center; margin-top: 14px; margin-bottom: 4px; }
 .fab-lock {
   background: #c53030; color: white;
   border: none; border-radius: 50px;
-  padding: 16px 22px; font-size: 15px; font-weight: 700;
+  padding: 16px 36px; font-size: 15px; font-weight: 700;
   cursor: pointer;
   box-shadow: 0 4px 14px rgba(197,48,48,0.45);
-  display: flex; align-items: center; gap: 8px;
+  display: inline-flex; align-items: center; gap: 8px;
 }
 .fab-unlock { background: #744210; }
 .fab-lock:active { transform: scale(0.96); }
+/* 管理者モード中は各タブの上部にロックボタンを表示 */
+.admin-lock-bar { display: none; background: #744210; color: white; text-align: center; padding: 10px; }
+.admin-lock-bar.visible { display: block; }
+.admin-lock-bar button { background: none; border: 1px solid rgba(255,255,255,0.5); color: white; border-radius: 20px; padding: 6px 18px; font-size: 13px; font-weight: 700; cursor: pointer; }
 /* ===== PINモーダル ===== */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 200; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
 .modal-overlay.hidden { display: none; }
@@ -298,6 +302,10 @@ label:first-child { margin-top: 0; }
   <button class="nav-btn" onclick="showAdminTab('salary', this)"><span class="nav-icon">&#x1F4B4;</span>給与計算</button>
   <button class="nav-btn" onclick="showAdminTab('settings', this)"><span class="nav-icon">&#x2699;&#xFE0F;</span>設定</button>
 </div>
+<!-- 管理者モード中のロックバー -->
+<div class="admin-lock-bar" id="adminLockBar">
+  管理者モード中 &nbsp;<button onclick="lockAdmin()">&#x1F512; ロック</button>
+</div>
 <div class="content">
   <!-- 打刻タブ -->
   <div id="tab-punch" class="tab active">
@@ -335,6 +343,10 @@ label:first-child { margin-top: 0; }
         <span class="arrow">&#x2192;</span>
         <span class="time-rounded-val" id="resultRounded">--:--</span>
       </div>
+    </div>
+    <!-- 管理者ボタン（打刻ボタンの下） -->
+    <div class="fab" id="fabArea">
+      <button class="fab-lock" id="fabBtn" onclick="openPinModal()">&#x1F512; 管理者</button>
     </div>
   </div>
   <!-- 勤務記録タブ -->
@@ -422,10 +434,6 @@ label:first-child { margin-top: 0; }
     </div>
     <button class="btn btn-gray" style="width:100%;margin-top:4px;" onclick="lockAdmin()">&#x1F512; 管理者メニューをロックする</button>
   </div>
-</div>
-<!-- FAB -->
-<div class="fab" id="fabArea">
-  <button class="fab-lock" id="fabBtn" onclick="openPinModal()">&#x1F512; 管理者</button>
 </div>
 <!-- PINモーダル -->
 <div class="modal-overlay hidden" id="pinModal">
@@ -682,9 +690,8 @@ function updatePinDots() {
 function enterAdminMode() {
   isAdminMode = true;
   document.getElementById('adminNav').classList.add('visible');
-  document.getElementById('fabBtn').className = 'fab-lock fab-unlock';
-  document.getElementById('fabBtn').innerHTML = '🔓 管理中';
-  document.getElementById('fabBtn').onclick = lockAdmin;
+  document.getElementById('adminLockBar').classList.add('visible');
+  document.getElementById('fabArea').style.display = 'none'; // 打刻タブの管理者ボタンを隠す
   showAdminTab('records', document.querySelector('.admin-nav .nav-btn'));
   updateSelects();
   showToast('✅ 管理者モードです');
@@ -692,9 +699,8 @@ function enterAdminMode() {
 function lockAdmin() {
   isAdminMode = false;
   document.getElementById('adminNav').classList.remove('visible');
-  document.getElementById('fabBtn').className = 'fab-lock';
-  document.getElementById('fabBtn').innerHTML = '🔒 管理者';
-  document.getElementById('fabBtn').onclick = openPinModal;
+  document.getElementById('adminLockBar').classList.remove('visible');
+  document.getElementById('fabArea').style.display = ''; // 管理者ボタンを再表示
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.getElementById('tab-punch').classList.add('active');
   showToast('🔒 ロックしました');
