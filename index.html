@@ -263,6 +263,51 @@ label:first-child { margin-top: 0; }
 /* ===== Toast ===== */
 .toast { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%); background: #2d3748; color: white; padding: 12px 22px; border-radius: 10px; font-size: 14px; font-weight: 600; z-index: 500; opacity: 0; transition: opacity 0.3s; pointer-events: none; white-space: nowrap; max-width: 85vw; overflow: hidden; text-overflow: ellipsis; }
 .toast.show { opacity: 1; }
+/* ===== 大きな警告（打刻忘れ・通信エラー） ===== */
+/* スタッフがその場で必ず気づく必要があるものだけ、画面全体を覆って知らせる */
+.alert-overlay {
+  position: fixed; inset: 0; z-index: 900;
+  background: rgba(0,0,0,0.72);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  animation: alertIn 0.18s;
+}
+.alert-overlay.hidden { display: none; }
+@keyframes alertIn { from { opacity: 0; } to { opacity: 1; } }
+.alert-box {
+  background: white;
+  border: 5px solid #c53030;
+  border-radius: 20px;
+  padding: 32px 24px 24px;
+  width: 100%; max-width: 400px;
+  text-align: center;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.45);
+}
+.alert-icon  { font-size: 68px; line-height: 1; margin-bottom: 10px; }
+.alert-title {
+  font-size: 30px; font-weight: 900; color: #c53030;
+  line-height: 1.3; letter-spacing: 1px; margin-bottom: 16px;
+}
+.alert-msg {
+  font-size: 17px; font-weight: 700; color: #2d3748;
+  line-height: 1.7; margin-bottom: 24px;
+}
+.alert-msg .sub { display: block; font-size: 14px; font-weight: 600; color: #718096; margin-top: 10px; }
+.alert-btn {
+  width: 100%; padding: 18px;
+  border: none; border-radius: 14px;
+  background: #c53030; color: white;
+  font-size: 19px; font-weight: 800; cursor: pointer;
+}
+.alert-btn:active { transform: scale(0.98); }
+@media (max-width: 400px) {
+  /* 「WiFiをつないでください」が2行に折れて読みにくくなるため、
+     小さい画面では字間を詰めて1行に収める */
+  .alert-title { font-size: 23px; letter-spacing: 0; }
+  .alert-icon  { font-size: 56px; }
+  .alert-msg   { font-size: 16px; }
+  .alert-box   { padding: 26px 18px 20px; }
+}
 /* ===== モバイル対応 ===== */
 @media (max-width: 400px) {
   .punch-btn { font-size: 20px; padding: 22px; }
@@ -485,6 +530,15 @@ label:first-child { margin-top: 0; }
 </div>
 <!-- Toast -->
 <div class="toast" id="toast"></div>
+<!-- 大きな警告（打刻忘れ・通信エラー） -->
+<div class="alert-overlay hidden" id="bigAlert">
+  <div class="alert-box">
+    <div class="alert-icon"  id="alertIcon">⚠️</div>
+    <div class="alert-title" id="alertTitle"></div>
+    <div class="alert-msg"   id="alertMsg"></div>
+    <button class="alert-btn" onclick="closeBigAlert()">確認しました</button>
+  </div>
+</div>
 <script>
 // ============================================================
 //  GAS URL 自動設定（GASからサーブされた場合に自動でURLをlocalStorageへ保存）
@@ -625,6 +679,25 @@ async function doPunch() {
     rawTime: now.toISOString(), roundedTime: rounded.toISOString(),
     date: fmtDate(now), synced: false
   };
+  // ② 出勤を押さずに退勤が押された場合の警告
+  //    出勤が無いと勤務時間が計算されず、給与に反映されないため必ず気づかせる。
+  //    打刻自体は止めない（止めると記録が何も残らなくなる）。
+  if (!isIn) {
+    const needType = selectedShift.includes('昼') ? '昼出勤' : '夜出勤';
+    const today    = fmtDate(now);
+    const hasIn    = loadRecords().some(r =>
+      r.staffName === selectedStaffName &&
+      r.date === today &&
+      r.type.replace(/[\s　]/g, '') === needType
+    );
+    if (!hasIn) {
+      showBigAlert('🚨', '店長に報告してください',
+        `${selectedStaffName}さんの<br><b>${needType}</b>が押されていません。<br><br>` +
+        `このままだと勤務時間が計算されず、<br>お給料に反映されません。` +
+        `<span class="sub">退勤の打刻は記録しました</span>`);
+    }
+  }
+
   const recs = loadRecords(); recs.push(rec); saveRecords(recs);
   const re = document.getElementById('punchResult');
   re.className = 'punch-result' + (isIn ? '' : ' out-result');
@@ -646,8 +719,21 @@ async function doPunch() {
       saveRecords(updated);
       setCloudBadge('online', '☁️ 送信OK');
     } else {
+      // ① 送信できなかった場合の警告
+      //    打刻自体は端末に残っているので、「消えた」と誤解させないことが大事。
+      //    二重打刻を誘発するとデータが余計に壊れる。
       setCloudBadge('offline', '⚠️ 送信失敗');
-      showToast('⚠️ クラウド送信に失敗しました。アプリ内には保存済みです。');
+      if (!navigator.onLine) {
+        showBigAlert('📶', 'WiFiをつないでください',
+          '打刻はこの端末に保存されています。<br>' +
+          'WiFiにつなぐと自動で送信されます。' +
+          '<span class="sub">もう一度打刻し直す必要はありません</span>');
+      } else {
+        showBigAlert('📶', '送信できませんでした',
+          'WiFiの接続を確認してください。<br>' +
+          'つながらない場合は店長に報告してください。' +
+          '<span class="sub">打刻はこの端末に保存されています</span>');
+      }
     }
   }
 }
@@ -960,6 +1046,30 @@ let _tt=null;
 function showToast(msg){
   const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
   if(_tt) clearTimeout(_tt); _tt=setTimeout(()=>t.classList.remove('show'),2500);
+}
+// ============================================================
+//  大きな警告
+//  トーストは数秒で消えてしまい見落とされるため、
+//  「その場で対応してほしいこと」だけ画面全体で知らせる。
+//  複数同時に起きても消えないよう、順番に表示する。
+// ============================================================
+let _alertQueue = [];
+function showBigAlert(icon, title, msg) {
+  _alertQueue.push({ icon, title, msg });
+  if (document.getElementById('bigAlert').classList.contains('hidden')) _renderBigAlert();
+}
+function _renderBigAlert() {
+  const a = _alertQueue[0];
+  if (!a) return;
+  document.getElementById('alertIcon').textContent  = a.icon;
+  document.getElementById('alertTitle').textContent = a.title;
+  document.getElementById('alertMsg').innerHTML     = a.msg;
+  document.getElementById('bigAlert').classList.remove('hidden');
+}
+function closeBigAlert() {
+  _alertQueue.shift();
+  if (_alertQueue.length) { _renderBigAlert(); return; }
+  document.getElementById('bigAlert').classList.add('hidden');
 }
 // ============================================================
 //  クラウド連携
