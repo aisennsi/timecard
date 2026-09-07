@@ -1122,6 +1122,45 @@ async function syncPending() {
   showToast(`✅ ${success}/${pending.length}件 送信完了`);
   setCloudBadge(success===pending.length ? 'online':'offline', success===pending.length ? '☁️ 送信OK':'⚠️ 一部失敗');
 }
+// ============================================================
+//  未送信の打刻を自動で送る
+//  オフライン時の打刻は端末に残るだけなので、
+//  ネットに戻ったら自動で送らないとスプレッドシートに永久に入らない。
+//  （管理者PINが要る「未送信を再送」ボタンだけでは、スタッフには直せない）
+// ============================================================
+let _autoSyncing = false;
+async function autoSyncPending() {
+  if (_autoSyncing) return;                 // 二重実行を防ぐ
+  const url = loadWebAppUrl();
+  if (!url || !navigator.onLine) return;
+
+  const recs    = loadRecords();
+  const pending = recs.filter(r => !r.synced);
+  if (!pending.length) return;
+
+  _autoSyncing = true;
+  setCloudBadge('syncing', `⏳ 未送信${pending.length}件を送信中...`);
+  let success = 0;
+  for (const r of pending) {
+    const ok = await sendToCloud({ staffName: r.staffName, type: r.type, rawTime: r.rawTime });
+    if (ok) { r.synced = true; success++; }
+  }
+  saveRecords(recs);
+  _autoSyncing = false;
+
+  if (success > 0) {
+    setCloudBadge('online', `☁️ ${success}件送信OK`);
+    // 「送れていない」と伝えた以上、送れたことも同じ大きさで伝える
+    showBigAlert('✅', '送信できました',
+      `たまっていた打刻 <b>${success}件</b> を送信しました。` +
+      `<span class="sub">そのままお使いいただけます</span>`);
+  } else {
+    setCloudBadge('offline', '⚠️ まだ送信できていません');
+  }
+}
+// ネットにつながった瞬間に送る
+window.addEventListener('online', () => { autoSyncPending(); });
+
 function setCloudBadge(type, text) {
   const b = document.getElementById('cloudBadge');
   b.className = 'cloud-badge ' + type;
@@ -1224,6 +1263,8 @@ updateCloudBadge();
     const last = load(KEY_SYNC_TIME, '');
     if (last) updateSyncStatus('前回同期: ' + last);
     await syncSettingsFromCloud();
+    // ページを開き直したときにも、たまっている打刻を送る
+    await autoSyncPending();
   }
 })();
 </script>
