@@ -1128,35 +1128,58 @@ async function syncPending() {
 //  ネットに戻ったら自動で送らないとスプレッドシートに永久に入らない。
 //  （管理者PINが要る「未送信を再送」ボタンだけでは、スタッフには直せない）
 // ============================================================
+const AUTO_SYNC_DAYS  = 14;   // 自動送信する対象期間（これより古いものは扱わない）
+const AUTO_SYNC_LIMIT = 20;   // 1回で送る上限
+
 let _autoSyncing = false;
 async function autoSyncPending() {
   if (_autoSyncing) return;                 // 二重実行を防ぐ
   const url = loadWebAppUrl();
   if (!url || !navigator.onLine) return;
 
-  const recs    = loadRecords();
-  const pending = recs.filter(r => !r.synced);
-  if (!pending.length) return;
+  const recs   = loadRecords();
+  const border = Date.now() - AUTO_SYNC_DAYS * 86400000;
+  const unsent = recs.filter(r => !r.synced);
+
+  // ★新しい順に送る。
+  //   古い順にすると、たった今押した打刻が長い行列の最後尾になり、
+  //   いつまでもスプレッドシートに反映されない（実際に起きた）。
+  // ★古すぎるものは自動では送らない。
+  //   URL未設定だった頃の記録などが大量に残っていることがあり、
+  //   全部流すと時間がかかるうえ、今の打刻の邪魔になる。
+  //   まとめて送りたいときは設定画面の「未送信を再送」を使う。
+  const target = unsent
+    .filter(r => new Date(r.rawTime).getTime() >= border)
+    .sort((a, b) => new Date(b.rawTime) - new Date(a.rawTime))
+    .slice(0, AUTO_SYNC_LIMIT);
+
+  const oldCount = unsent.length - unsent.filter(r => new Date(r.rawTime).getTime() >= border).length;
+
+  if (!target.length) {
+    if (oldCount > 0) updateSyncStatus(`未送信が${oldCount}件あります（設定画面の「未送信を再送」で送れます）`);
+    return;
+  }
 
   _autoSyncing = true;
-  setCloudBadge('syncing', `⏳ 未送信${pending.length}件を送信中...`);
+  setCloudBadge('syncing', `⏳ ${target.length}件を送信中...`);
   let success = 0;
-  for (const r of pending) {
+  for (const r of target) {
     const ok = await sendToCloud({ staffName: r.staffName, type: r.type, rawTime: r.rawTime });
     if (ok) { r.synced = true; success++; }
   }
-  saveRecords(recs);
+  saveRecords(recs);   // target の各要素は recs の中身そのものなので、これで反映される
   _autoSyncing = false;
 
   if (success > 0) {
     setCloudBadge('online', `☁️ ${success}件送信OK`);
     // 「送れていない」と伝えた以上、送れたことも同じ大きさで伝える
     showBigAlert('✅', '送信できました',
-      `たまっていた打刻 <b>${success}件</b> を送信しました。` +
+      `打刻 <b>${success}件</b> を送信しました。` +
       `<span class="sub">そのままお使いいただけます</span>`);
   } else {
     setCloudBadge('offline', '⚠️ まだ送信できていません');
   }
+  if (oldCount > 0) updateSyncStatus(`古い未送信が${oldCount}件あります（設定画面の「未送信を再送」で送れます）`);
 }
 // ネットにつながった瞬間に送る
 window.addEventListener('online', () => { autoSyncPending(); });
