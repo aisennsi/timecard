@@ -805,9 +805,19 @@ const saveMakanai = v  => save(KEY_MAKANAI, v);
 // その人の今月の単価。未設定なら評価B相当の300円。
 // （100円を下回ると非課税の条件を割るので、既定値は下げないこと）
 function makanaiRateOf(name) {
-  const s = loadSettings();
-  const r = (s.makanaiRates || {})[name];
-  return (r && Number(r) > 0) ? Number(r) : 300;
+  const rates = loadSettings().makanaiRates || {};
+  // 空白の種類（半角／全角）の違いを無視して照合する。
+  // 単価は評価アプリが書き込むため、こちらの名簿と表記が完全一致しないことがある。
+  // 一致しないと黙って既定の300円になり、間違った金額を集めてしまう。
+  const norm = x => String(x || '').replace(/[\s　]/g, '');
+  const key  = norm(name);
+  for (const k in rates) {
+    if (norm(k) === key) {
+      const v = Number(rates[k]);
+      if (v > 0) return v;
+    }
+  }
+  return 300;
 }
 
 // 同じ人・同じ日にすでに記録済みか
@@ -1280,4 +1290,244 @@ async function syncPending() {
   if (!url) { showToast('⚠️ Web App URLを設定してください'); return; }
   const recs = loadRecords();
   const pending = recs.filter(r => !r.synced);
-  if (!pending.length) { showToast('未送信データはありません'); return; 
+  if (!pending.length) { showToast('未送信データはありません'); return; }
+  showToast(`⏳ ${pending.length}件を再送中...`);
+  let success = 0;
+  for (const r of pending) {
+    const ok = await sendToCloud({ staffName: r.staffName, type: r.type, rawTime: r.rawTime });
+    if (ok) { r.synced = true; success++; }
+  }
+  saveRecords(recs);
+  showToast(`✅ ${success}/${pending.length}件 送信完了`);
+  setCloudBadge(success===pending.length ? 'online':'offline', success===pending.length ? '☁️ 送信OK':'⚠️ 一部失敗');
+}
+// ============================================================
+//  未送信の打刻を自動で送る
+//  オフライン時の打刻は端末に残るだけなので、
+//  ネットに戻ったら自動で送らないとスプレッドシートに永久に入らない。
+//  （管理者PINが要る「未送信を再送」ボタンだけでは、スタッフには直せない）
+// ============================================================
+const AUTO_SYNC_DAYS  = 14;   // 自動送信する対象期間（これより古いものは扱わない）
+const AUTO_SYNC_LIMIT = 20;   // 1回で送る上限
+
+let _autoSyncing = false;
+async function autoSyncPending() {
+  if (_autoSyncing) return;                 // 二重実行を防ぐ
+  const url = loadWebAppUrl();
+  if (!url || !navigator.onLine) return;
+
+  const recs   = loadRecords();
+  const border = Date.now() - AUTO_SYNC_DAYS * 86400000;
+  const unsent = recs.filter(r => !r.synced);
+
+  // ★新しい順に送る。
+  //   古い順にすると、たった今押した打刻が長い行列の最後尾になり、
+  //   いつまでもスプレッドシートに反映されない（実際に起きた）。
+  // ★古すぎるものは自動では送らない。
+  //   URL未設定だった頃の記録などが大量に残っていることがあり、
+  //   全部流すと時間がかかるうえ、今の打刻の邪魔になる。
+  //   まとめて送りたいときは設定画面の「未送信を再送」を使う。
+  const target = unsent
+    .filter(r => new Date(r.rawTime).getTime() >= border)
+    .sort((a, b) => new Date(b.rawTime) - new Date(a.rawTime))
+    .slice(0, AUTO_SYNC_LIMIT);
+
+  const oldCount = unsent.length - unsent.filter(r => new Date(r.rawTime).getTime() >= border).length;
+
+  // まかないも同じ流れで送る。送れないと端末に残るだけになり、
+  // 集金額との照合が合わなくなる。件数は少ないので期間の制限はかけない。
+  const mks    = loadMakanai();
+  const mkPend = mks.filter(m => !m.synced);
+
+  if (!target.length && !mkPend.length) {
+    if (oldCount > 0) updateSyncStatus(`未送信が${oldCount}件あります（設定画面の「未送信を再送」で送れます）`);
+    return;
+  }
+
+  _autoSyncing = true;
+  setCloudBadge('syncing', `⏳ ${target.length + mkPend.length}件を送信中...`);
+  let success = 0;
+  for (const r of target) {
+    const ok = await sendToCloud({ staffName: r.staffName, type: r.type, rawTime: r.rawTime });
+    if (ok) { r.synced = true; success++; }
+  }
+  saveRecords(recs);   // target の各要素は recs の中身そのものなので、これで反映される
+
+  let mkOk = 0;
+  for (const m of mkPend) {
+    const ok = await sendMakanaiToCloud(m);
+    if (ok) { m.synced = true; mkOk++; }
+  }
+  saveMakanai(mks);
+  _autoSyncing = false;
+
+  if (success + mkOk > 0) {
+    setCloudBadge('online', `☁️ ${success + mkOk}件送信OK`);
+    const parts = [];
+    if (success > 0) parts.push(`打刻 <b>${success}件</b>`);
+    if (mkOk    > 0) parts.push(`まかない <b>${mkOk}件</b>`);
+    // 「送れていない」と伝えた以上、送れたことも同じ大きさで伝える
+    showBigAlert('✅', '送信できました',
+      `${parts.join('と')} を送信しました。` +
+      `<span class="sub">そのままお使いいただけます</span>`);
+  } else {
+    setCloudBadge('offline', '⚠️ まだ送信できていません');
+  }
+  if (oldCount > 0) updateSyncStatus(`古い未送信が${oldCount}件あります（設定画面の「未送信を再送」で送れます）`);
+}
+// ネットにつながった瞬間に送る
+window.addEventListener('online', () => { autoSyncPending(); });
+
+// ============================================================
+//  古い未送信の整理
+//
+//  「削除」ではなく「送信済みにする」。
+//  この記録が本当にスプレッドシートに入っているかは端末側からは確かめられず、
+//  もし入っていなければ消した時点で勤務の証拠が永久に失われる。
+//  送信済みにすれば行列から外れるだけで、勤務記録タブにもCSVにも残る。
+//  念のため、整理する前にCSVの控えを自動で保存する。
+// ============================================================
+function cleanupOldPending() {
+  const recs   = loadRecords();
+  const border = Date.now() - AUTO_SYNC_DAYS * 86400000;
+  const olds   = recs.filter(r => !r.synced && new Date(r.rawTime).getTime() < border);
+
+  if (!olds.length) { showToast('整理が必要な古い未送信はありません'); return; }
+
+  const by = {};
+  olds.forEach(r => { const k = (r.rawTime || '').slice(0, 7); by[k] = (by[k] || 0) + 1; });
+  const list = Object.keys(by).sort().map(k => `　${k} … ${by[k]}件`).join('\n');
+
+  if (!confirm(
+    `${AUTO_SYNC_DAYS}日より古い未送信 ${olds.length}件 を「送信済み」にします。\n\n` +
+    `${list}\n\n` +
+    `打刻の記録そのものは消えません（勤務記録タブで見られます）。\n` +
+    `念のためCSVの控えを保存してから実行します。\n\n実行しますか？`
+  )) return;
+
+  // 控えのCSV
+  let csv = '﻿日付,名前,種類,打刻時刻,丸め後\n';
+  olds.slice().sort((a, b) => new Date(a.rawTime) - new Date(b.rawTime)).forEach(r => {
+    csv += `${r.date},${r.staffName},${r.type},${r.rawTime},${r.roundedTime}\n`;
+  });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+  a.download = `未送信の控え_${new Date().toISOString().substring(0,10)}.csv`;
+  a.click();
+
+  olds.forEach(r => r.synced = true);
+  saveRecords(recs);
+  updateSyncStatus(`${olds.length}件を整理しました（CSVの控えを保存しました）`);
+  showToast(`✅ ${olds.length}件を整理しました`);
+}
+
+function setCloudBadge(type, text) {
+  const b = document.getElementById('cloudBadge');
+  b.className = 'cloud-badge ' + type;
+  b.textContent = text;
+  if (type !== 'offline') setTimeout(() => { if (b.className.includes(type)) b.className = 'cloud-badge'; }, 4000);
+}
+function updateCloudBadge() {
+  if (!loadWebAppUrl()) document.getElementById('cloudBadge').className = 'cloud-badge';
+}
+// ============================================================
+//  設定同期
+// ============================================================
+function updateSyncStatus(msg) {
+  const el = document.getElementById('syncStatus');
+  if (el) el.textContent = msg;
+}
+async function syncSettingsFromCloud() {
+  const url = loadWebAppUrl();
+  if (!url) { showToast('⚠️ Web App URLを設定してください'); return; }
+  updateSyncStatus('⏳ クラウドから取得中...');
+  try {
+    const res = await fetch(url + '?action=getSettings', { redirect: 'follow' });
+    const json = await res.json();
+    if (json.status === 'ok' && json.settings) {
+      const s = json.settings;
+      if (Array.isArray(s.staff) && s.staff.length) saveStaff(s.staff);
+      const cur = loadSettings();
+      if (s.hourlyRate !== undefined || s.cutoffDay !== undefined || s.staffRates !== undefined) {
+        save(KEY_SETTINGS, {
+          hourlyRate: s.hourlyRate !== undefined ? s.hourlyRate : cur.hourlyRate,
+          cutoffDay:  s.cutoffDay  !== undefined ? s.cutoffDay  : cur.cutoffDay,
+          staffRates: s.staffRates !== undefined ? s.staffRates : (cur.staffRates || {}),
+          makanaiRates: s.makanaiRates !== undefined ? s.makanaiRates : (cur.makanaiRates || {})
+        });
+      }
+      if (s.pin && /^\d{4}$/.test(String(s.pin))) save(KEY_PIN, String(s.pin));
+      const ss = loadSettings();
+      const hrEl = document.getElementById('hourlyRate');
+      const cdEl = document.getElementById('cutoffDay');
+      if (hrEl) hrEl.value = ss.hourlyRate;
+      if (cdEl) cdEl.value = ss.cutoffDay;
+      renderStaff();
+      const now = new Date();
+      const ts = pad2(now.getHours())+':'+pad2(now.getMinutes());
+      save(KEY_SYNC_TIME, ts);
+      updateSyncStatus('✅ 最終同期: ' + ts);
+      showToast('✅ 設定をクラウドから取得しました');
+    } else {
+      updateSyncStatus('⚠️ クラウドに設定がありません');
+    }
+  } catch(e) {
+    updateSyncStatus('❌ 取得に失敗しました');
+    showToast('⚠️ クラウドへの接続に失敗しました');
+  }
+}
+async function pushSettingsToCloud() {
+  const url = loadWebAppUrl();
+  if (!url) return;
+  const s = loadSettings();
+  const payload = {
+    action: 'saveSettings',
+    settings: { staff: loadStaff(), hourlyRate: s.hourlyRate, cutoffDay: s.cutoffDay, pin: loadPin(), makanaiRates: s.makanaiRates || {} }
+  };
+  try {
+    const res = await fetch(url, {
+      method: 'POST', redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    const json = await res.json();
+    if (json.status === 'ok') {
+      const now = new Date();
+      const ts = pad2(now.getHours())+':'+pad2(now.getMinutes());
+      save(KEY_SYNC_TIME, ts);
+      updateSyncStatus('✅ 最終同期: ' + ts);
+    }
+  } catch(e) { /* 静かに無視 */ }
+}
+// ============================================================
+//  キーボード対応
+// ============================================================
+document.addEventListener('keydown', function(e) {
+  if (!document.getElementById('pinModal').classList.contains('hidden')) {
+    if ((e.keyCode >= 48 && e.keyCode <= 57) || (e.keyCode >= 96 && e.keyCode <= 105)) {
+      pinKey(e.keyCode >= 96 ? String(e.keyCode - 96) : String(e.keyCode - 48));
+      e.preventDefault();
+    }
+    if (e.key === 'Backspace') { pinDel(); e.preventDefault(); }
+    if (e.key === 'Escape')    { closePinModal(); e.preventDefault(); }
+  }
+});
+// ============================================================
+//  初期化
+// ============================================================
+renderStaff();
+updateSelects();
+updateCloudBadge();
+(async () => {
+  const url = loadWebAppUrl();
+  if (url) {
+    const last = load(KEY_SYNC_TIME, '');
+    if (last) updateSyncStatus('前回同期: ' + last);
+    await syncSettingsFromCloud();
+    // ページを開き直したときにも、たまっている打刻を送る
+    await autoSyncPending();
+  }
+})();
+</script>
+</body>
+</html>
