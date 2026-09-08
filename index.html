@@ -132,6 +132,29 @@ body {
 .punch-btn.out { background: linear-gradient(135deg, #c53030, #9b2c2c); color: white; box-shadow: 0 4px 16px rgba(197,48,48,0.35); }
 .punch-btn.idle { background: #e8e8ee; color: #a0aec0; cursor: default; }
 .punch-btn:not(.idle):active { transform: scale(0.98); }
+/* ===== まかないボタン ===== */
+.makanai-btn {
+  width: 100%; padding: 20px;
+  margin-top: 10px;
+  border: none; border-radius: 16px;
+  font-size: 19px; font-weight: 800;
+  cursor: pointer; letter-spacing: 1px;
+  background: #dd6b20; color: white;
+  box-shadow: 0 4px 14px rgba(221,107,32,0.35);
+  transition: all 0.15s;
+}
+.makanai-btn.idle { background: #e8e8ee; color: #a0aec0; cursor: default; box-shadow: none; }
+.makanai-btn.done { background: #edf2f7; color: #718096; cursor: default; box-shadow: none; }
+.makanai-btn:not(.idle):not(.done):active { transform: scale(0.98); }
+/* まかないの確認カード */
+.makanai-modal { background: white; border-radius: 22px; padding: 30px 24px 24px; width: 340px; max-width: 90vw; text-align: center; box-shadow: 0 24px 48px rgba(0,0,0,0.3); }
+.makanai-name  { font-size: 19px; font-weight: 800; color: #2d3748; margin-bottom: 6px; }
+.makanai-amount{ font-size: 52px; font-weight: 900; color: #dd6b20; line-height: 1.1; margin-bottom: 14px; }
+.makanai-lead  { font-size: 16px; font-weight: 700; color: #2d3748; line-height: 1.7; margin-bottom: 22px; }
+.makanai-btns  { display: flex; gap: 10px; }
+.makanai-btns button { flex: 1; padding: 16px 8px; border: none; border-radius: 12px; font-size: 16px; font-weight: 800; cursor: pointer; }
+.makanai-cancel { background: #e2e8f0; color: #4a5568; }
+.makanai-ok     { background: #dd6b20; color: white; }
 /* ===== 打刻結果 ===== */
 .punch-result {
   text-align: center;
@@ -378,6 +401,7 @@ label:first-child { margin-top: 0; }
       </div>
     </div>
     <button class="punch-btn idle" id="punchBtn" onclick="doPunch()">名前と種類を選んでください</button>
+    <button class="makanai-btn idle" id="makanaiBtn" onclick="openMakanai()">&#x1F35A; まかない</button>
     <div id="punchResult" style="display:none;" class="punch-result">
       <div class="result-name" id="resultName"></div>
       <div class="result-type-badge" id="resultBadge"></div>
@@ -450,6 +474,7 @@ label:first-child { margin-top: 0; }
         <button class="btn btn-blue" style="flex:1;" onclick="testConnection()">&#x1F517; 接続テスト</button>
         <button class="btn btn-gray"  style="flex:1;" onclick="syncPending()">&#x1F504; 未送信を再送</button>
       </div>
+      <button class="btn btn-gray" style="width:100%;margin-top:8px;" onclick="cleanupOldPending()">&#x1F9F9; 古い未送信を整理する</button>
       <div id="connectionResult" style="font-size:13px;margin-top:10px;min-height:20px;"></div>
       <p style="font-size:12px;color:#a0aec0;margin-top:8px;">URLが未設定の場合はアプリ内にのみ保存されます（オフラインモード）</p>
       <hr style="border:none;border-top:1px solid #f0f0f5;margin:14px 0 10px;">
@@ -522,6 +547,16 @@ label:first-child { margin-top: 0; }
       <input type="number" id="editStaffRate" min="600" max="9999" placeholder="例: 1100" style="width:140px;margin-bottom:0;">
       <span style="font-size:14px;color:#4a5568;">円</span>
     </div>
+    <label style="font-size:13px;font-weight:600;color:#4a5568;display:block;margin:0 0 6px;">
+      今月のまかない単価
+      <span style="font-size:11px;font-weight:400;color:#a0aec0;margin-left:4px;">評価に応じて設定</span>
+    </label>
+    <select id="editStaffMakanai" style="margin-bottom:16px;">
+      <option value="">未設定（300円として扱う）</option>
+      <option value="100">100円（評価A）</option>
+      <option value="300">300円（評価B）</option>
+      <option value="500">500円（評価C）</option>
+    </select>
     <div class="edit-modal-btns">
       <button class="btn btn-gray" onclick="closeEditModal()">キャンセル</button>
       <button class="btn btn-blue" onclick="saveEditStaff()">保存する</button>
@@ -530,6 +565,18 @@ label:first-child { margin-top: 0; }
 </div>
 <!-- Toast -->
 <div class="toast" id="toast"></div>
+<!-- まかないの確認カード -->
+<div class="modal-overlay hidden" id="makanaiModal">
+  <div class="makanai-modal">
+    <div class="makanai-name"   id="makanaiName"></div>
+    <div class="makanai-amount" id="makanaiAmount"></div>
+    <div class="makanai-lead"   id="makanaiLead"></div>
+    <div class="makanai-btns">
+      <button class="makanai-cancel" onclick="closeMakanai()">キャンセル</button>
+      <button class="makanai-ok"     onclick="confirmMakanai()">OK</button>
+    </div>
+  </div>
+</div>
 <!-- 大きな警告（打刻忘れ・通信エラー） -->
 <div class="alert-overlay hidden" id="bigAlert">
   <div class="alert-box">
@@ -557,13 +604,14 @@ const KEY_SETTINGS  = 'tc_settings_v3';
 const KEY_PIN       = 'tc_pin_v3';
 const KEY_WEBAPP    = 'tc_webapp_url_v3';
 const KEY_SYNC_TIME = 'tc_sync_time_v3';
+const KEY_MAKANAI   = 'tc_makanai_v3';   // まかない記録（金額つき）
 const load = (k, def) => { try { const v = JSON.parse(localStorage.getItem(k)); return (v !== null && v !== undefined) ? v : def; } catch(e){ return def; } };
 const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
 const loadRecords   = () => load(KEY_RECORDS, []);
 const saveRecords   = v  => save(KEY_RECORDS, v);
 const loadStaff     = () => { const s = load(KEY_STAFF, null); return s && s.length ? s : ['スタッフA','スタッフB','スタッフC','スタッフD']; };
 const saveStaff     = v  => save(KEY_STAFF, v);
-const loadSettings  = () => Object.assign({hourlyRate:1050, cutoffDay:20, staffRates:{}}, load(KEY_SETTINGS, {}));
+const loadSettings  = () => Object.assign({hourlyRate:1050, cutoffDay:20, staffRates:{}, makanaiRates:{}}, load(KEY_SETTINGS, {}));
 const loadWebAppUrl = () => load(KEY_WEBAPP, '');
 const saveWebAppUrl = () => { save(KEY_WEBAPP, document.getElementById('webAppUrl').value.trim()); updateCloudBadge(); };
 const saveSettings  = () => {
@@ -637,6 +685,7 @@ function renderPunchStaffGrid() {
     </button>`
   ).join('');
   updatePunchBtn();
+  updateMakanaiBtn();
 }
 function selectPunchStaff(name) {
   selectedStaffName = name;
@@ -644,6 +693,7 @@ function selectPunchStaff(name) {
     b.classList.toggle('selected', b.dataset.name === name);
   });
   updatePunchBtn();
+  updateMakanaiBtn();
 }
 function updatePunchBtn() {
   const btn = document.getElementById('punchBtn');
@@ -737,6 +787,118 @@ async function doPunch() {
     }
   }
 }
+// ============================================================
+//  まかない
+//
+//  評価に応じて単価が変わる（A=100 / B=300 / C=500円）。
+//  1食の原価は200円で、Aの100円は価額のちょうど50%。
+//  これで非課税の条件（本人が半額以上を負担）を満たしているため、
+//  100円という金額には税務上の意味がある。
+//
+//  記録するのは「食数」ではなく「金額」。
+//  食数だけ残して後から単価を掛ける作りにすると、
+//  評価が変わったときに過去の記録まで書き換わってしまう。
+// ============================================================
+const loadMakanai = () => load(KEY_MAKANAI, []);
+const saveMakanai = v  => save(KEY_MAKANAI, v);
+
+// その人の今月の単価。未設定なら評価B相当の300円。
+// （100円を下回ると非課税の条件を割るので、既定値は下げないこと）
+function makanaiRateOf(name) {
+  const s = loadSettings();
+  const r = (s.makanaiRates || {})[name];
+  return (r && Number(r) > 0) ? Number(r) : 300;
+}
+
+// 同じ人・同じ日にすでに記録済みか
+// 通し勤務で2食ぶん食べて1食ぶんしか払わないと、
+// 2食目が実質無料になり非課税の条件を満たさなくなるため1日1食に制限する。
+function makanaiDoneToday(name) {
+  const today = fmtDate(new Date());
+  return loadMakanai().some(m => m.staffName === name && m.date === today);
+}
+
+function updateMakanaiBtn() {
+  const b = document.getElementById('makanaiBtn');
+  if (!b) return;
+  if (!selectedStaffName) {
+    b.className = 'makanai-btn idle';
+    b.innerHTML = '&#x1F35A; まかない';
+    return;
+  }
+  if (makanaiDoneToday(selectedStaffName)) {
+    b.className = 'makanai-btn done';
+    b.innerHTML = '&#x1F35A; まかない（記録済み）';
+    return;
+  }
+  b.className = 'makanai-btn';
+  b.innerHTML = `&#x1F35A; まかない　${makanaiRateOf(selectedStaffName)}円`;
+}
+
+function openMakanai() {
+  if (!selectedStaffName) { showToast('⚠️ スタッフを選んでください'); return; }
+  if (makanaiDoneToday(selectedStaffName)) {
+    showToast('本日は記録済みです（1日1食まで）');
+    return;
+  }
+  const yen = makanaiRateOf(selectedStaffName);
+  document.getElementById('makanaiName').textContent   = selectedStaffName + 'さん';
+  document.getElementById('makanaiAmount').textContent = yen + '円';
+  document.getElementById('makanaiLead').innerHTML =
+    `まかないの金額 <b>${yen}円</b> を、<br>店長に渡してください`;
+  document.getElementById('makanaiModal').classList.remove('hidden');
+}
+function closeMakanai() {
+  document.getElementById('makanaiModal').classList.add('hidden');
+}
+
+async function confirmMakanai() {
+  const name = selectedStaffName;
+  closeMakanai();
+  if (!name || makanaiDoneToday(name)) return;
+
+  const now = new Date();
+  // タップした時点の単価を確定して保存する（後から掛け直さない）
+  const rec = {
+    id: Date.now(), staffName: name, amount: makanaiRateOf(name),
+    rawTime: now.toISOString(), date: fmtDate(now), synced: false
+  };
+  const list = loadMakanai(); list.push(rec); saveMakanai(list);
+  updateMakanaiBtn();
+  showToast(`✅ ${name}さんのまかない ${rec.amount}円 を記録しました`);
+
+  const url = loadWebAppUrl();
+  if (!url) return;
+  const ok = await sendMakanaiToCloud(rec);
+  if (ok) {
+    saveMakanai(loadMakanai().map(m => m.id === rec.id ? Object.assign({}, m, {synced:true}) : m));
+    setCloudBadge('online', '☁️ 送信OK');
+  } else {
+    setCloudBadge('offline', '⚠️ 送信失敗');
+    showBigAlert('📶', 'WiFiをつないでください',
+      'まかないの記録はこの端末に保存されています。<br>' +
+      'WiFiにつなぐと自動で送信されます。' +
+      '<span class="sub">もう一度押す必要はありません</span>');
+  }
+}
+
+async function sendMakanaiToCloud(rec) {
+  const url = loadWebAppUrl();
+  if (!url) return false;
+  try {
+    const res = await fetch(url, {
+      method: 'POST', redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'saveMakanai',
+        staffName: rec.staffName, amount: rec.amount, rawTime: rec.rawTime
+      })
+    });
+    const json = await res.json();
+    return json.status === 'ok';
+  } catch(e) { return false; }
+}
+
 // ============================================================
 //  管理者モード / PINモーダル
 // ============================================================
@@ -949,6 +1111,8 @@ function openEditModal(name) {
   const s = loadSettings();
   const rate = (s.staffRates && s.staffRates[name]) ? s.staffRates[name] : '';
   document.getElementById('editStaffRate').value = rate;
+  const mk = (s.makanaiRates && s.makanaiRates[name]) ? String(s.makanaiRates[name]) : '';
+  document.getElementById('editStaffMakanai').value = mk;
   document.getElementById('editModal').classList.remove('hidden');
   setTimeout(()=>document.getElementById('editStaffInput').focus(), 100);
 }
@@ -973,7 +1137,12 @@ function saveEditStaff() {
   const rates = Object.assign({}, s.staffRates || {});
   delete rates[_editingStaff];
   if (newRateRaw > 0) rates[newName] = newRateRaw;
-  save(KEY_SETTINGS, Object.assign({}, s, { staffRates: rates }));
+  // まかない単価（評価A/B/C）。未設定なら消しておく。
+  const mkRaw = parseInt(document.getElementById('editStaffMakanai').value) || 0;
+  const mkRates = Object.assign({}, s.makanaiRates || {});
+  delete mkRates[_editingStaff];
+  if (mkRaw > 0) mkRates[newName] = mkRaw;
+  save(KEY_SETTINGS, Object.assign({}, s, { staffRates: rates, makanaiRates: mkRates }));
   if (selectedStaffName === _editingStaff) selectedStaffName = newName;
   closeEditModal();
   renderStaff();
@@ -1111,185 +1280,4 @@ async function syncPending() {
   if (!url) { showToast('⚠️ Web App URLを設定してください'); return; }
   const recs = loadRecords();
   const pending = recs.filter(r => !r.synced);
-  if (!pending.length) { showToast('未送信データはありません'); return; }
-  showToast(`⏳ ${pending.length}件を再送中...`);
-  let success = 0;
-  for (const r of pending) {
-    const ok = await sendToCloud({ staffName: r.staffName, type: r.type, rawTime: r.rawTime });
-    if (ok) { r.synced = true; success++; }
-  }
-  saveRecords(recs);
-  showToast(`✅ ${success}/${pending.length}件 送信完了`);
-  setCloudBadge(success===pending.length ? 'online':'offline', success===pending.length ? '☁️ 送信OK':'⚠️ 一部失敗');
-}
-// ============================================================
-//  未送信の打刻を自動で送る
-//  オフライン時の打刻は端末に残るだけなので、
-//  ネットに戻ったら自動で送らないとスプレッドシートに永久に入らない。
-//  （管理者PINが要る「未送信を再送」ボタンだけでは、スタッフには直せない）
-// ============================================================
-const AUTO_SYNC_DAYS  = 14;   // 自動送信する対象期間（これより古いものは扱わない）
-const AUTO_SYNC_LIMIT = 20;   // 1回で送る上限
-
-let _autoSyncing = false;
-async function autoSyncPending() {
-  if (_autoSyncing) return;                 // 二重実行を防ぐ
-  const url = loadWebAppUrl();
-  if (!url || !navigator.onLine) return;
-
-  const recs   = loadRecords();
-  const border = Date.now() - AUTO_SYNC_DAYS * 86400000;
-  const unsent = recs.filter(r => !r.synced);
-
-  // ★新しい順に送る。
-  //   古い順にすると、たった今押した打刻が長い行列の最後尾になり、
-  //   いつまでもスプレッドシートに反映されない（実際に起きた）。
-  // ★古すぎるものは自動では送らない。
-  //   URL未設定だった頃の記録などが大量に残っていることがあり、
-  //   全部流すと時間がかかるうえ、今の打刻の邪魔になる。
-  //   まとめて送りたいときは設定画面の「未送信を再送」を使う。
-  const target = unsent
-    .filter(r => new Date(r.rawTime).getTime() >= border)
-    .sort((a, b) => new Date(b.rawTime) - new Date(a.rawTime))
-    .slice(0, AUTO_SYNC_LIMIT);
-
-  const oldCount = unsent.length - unsent.filter(r => new Date(r.rawTime).getTime() >= border).length;
-
-  if (!target.length) {
-    if (oldCount > 0) updateSyncStatus(`未送信が${oldCount}件あります（設定画面の「未送信を再送」で送れます）`);
-    return;
-  }
-
-  _autoSyncing = true;
-  setCloudBadge('syncing', `⏳ ${target.length}件を送信中...`);
-  let success = 0;
-  for (const r of target) {
-    const ok = await sendToCloud({ staffName: r.staffName, type: r.type, rawTime: r.rawTime });
-    if (ok) { r.synced = true; success++; }
-  }
-  saveRecords(recs);   // target の各要素は recs の中身そのものなので、これで反映される
-  _autoSyncing = false;
-
-  if (success > 0) {
-    setCloudBadge('online', `☁️ ${success}件送信OK`);
-    // 「送れていない」と伝えた以上、送れたことも同じ大きさで伝える
-    showBigAlert('✅', '送信できました',
-      `打刻 <b>${success}件</b> を送信しました。` +
-      `<span class="sub">そのままお使いいただけます</span>`);
-  } else {
-    setCloudBadge('offline', '⚠️ まだ送信できていません');
-  }
-  if (oldCount > 0) updateSyncStatus(`古い未送信が${oldCount}件あります（設定画面の「未送信を再送」で送れます）`);
-}
-// ネットにつながった瞬間に送る
-window.addEventListener('online', () => { autoSyncPending(); });
-
-function setCloudBadge(type, text) {
-  const b = document.getElementById('cloudBadge');
-  b.className = 'cloud-badge ' + type;
-  b.textContent = text;
-  if (type !== 'offline') setTimeout(() => { if (b.className.includes(type)) b.className = 'cloud-badge'; }, 4000);
-}
-function updateCloudBadge() {
-  if (!loadWebAppUrl()) document.getElementById('cloudBadge').className = 'cloud-badge';
-}
-// ============================================================
-//  設定同期
-// ============================================================
-function updateSyncStatus(msg) {
-  const el = document.getElementById('syncStatus');
-  if (el) el.textContent = msg;
-}
-async function syncSettingsFromCloud() {
-  const url = loadWebAppUrl();
-  if (!url) { showToast('⚠️ Web App URLを設定してください'); return; }
-  updateSyncStatus('⏳ クラウドから取得中...');
-  try {
-    const res = await fetch(url + '?action=getSettings', { redirect: 'follow' });
-    const json = await res.json();
-    if (json.status === 'ok' && json.settings) {
-      const s = json.settings;
-      if (Array.isArray(s.staff) && s.staff.length) saveStaff(s.staff);
-      const cur = loadSettings();
-      if (s.hourlyRate !== undefined || s.cutoffDay !== undefined || s.staffRates !== undefined) {
-        save(KEY_SETTINGS, {
-          hourlyRate: s.hourlyRate !== undefined ? s.hourlyRate : cur.hourlyRate,
-          cutoffDay:  s.cutoffDay  !== undefined ? s.cutoffDay  : cur.cutoffDay,
-          staffRates: s.staffRates !== undefined ? s.staffRates : (cur.staffRates || {})
-        });
-      }
-      if (s.pin && /^\d{4}$/.test(String(s.pin))) save(KEY_PIN, String(s.pin));
-      const ss = loadSettings();
-      const hrEl = document.getElementById('hourlyRate');
-      const cdEl = document.getElementById('cutoffDay');
-      if (hrEl) hrEl.value = ss.hourlyRate;
-      if (cdEl) cdEl.value = ss.cutoffDay;
-      renderStaff();
-      const now = new Date();
-      const ts = pad2(now.getHours())+':'+pad2(now.getMinutes());
-      save(KEY_SYNC_TIME, ts);
-      updateSyncStatus('✅ 最終同期: ' + ts);
-      showToast('✅ 設定をクラウドから取得しました');
-    } else {
-      updateSyncStatus('⚠️ クラウドに設定がありません');
-    }
-  } catch(e) {
-    updateSyncStatus('❌ 取得に失敗しました');
-    showToast('⚠️ クラウドへの接続に失敗しました');
-  }
-}
-async function pushSettingsToCloud() {
-  const url = loadWebAppUrl();
-  if (!url) return;
-  const s = loadSettings();
-  const payload = {
-    action: 'saveSettings',
-    settings: { staff: loadStaff(), hourlyRate: s.hourlyRate, cutoffDay: s.cutoffDay, pin: loadPin() }
-  };
-  try {
-    const res = await fetch(url, {
-      method: 'POST', redirect: 'follow',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    });
-    const json = await res.json();
-    if (json.status === 'ok') {
-      const now = new Date();
-      const ts = pad2(now.getHours())+':'+pad2(now.getMinutes());
-      save(KEY_SYNC_TIME, ts);
-      updateSyncStatus('✅ 最終同期: ' + ts);
-    }
-  } catch(e) { /* 静かに無視 */ }
-}
-// ============================================================
-//  キーボード対応
-// ============================================================
-document.addEventListener('keydown', function(e) {
-  if (!document.getElementById('pinModal').classList.contains('hidden')) {
-    if ((e.keyCode >= 48 && e.keyCode <= 57) || (e.keyCode >= 96 && e.keyCode <= 105)) {
-      pinKey(e.keyCode >= 96 ? String(e.keyCode - 96) : String(e.keyCode - 48));
-      e.preventDefault();
-    }
-    if (e.key === 'Backspace') { pinDel(); e.preventDefault(); }
-    if (e.key === 'Escape')    { closePinModal(); e.preventDefault(); }
-  }
-});
-// ============================================================
-//  初期化
-// ============================================================
-renderStaff();
-updateSelects();
-updateCloudBadge();
-(async () => {
-  const url = loadWebAppUrl();
-  if (url) {
-    const last = load(KEY_SYNC_TIME, '');
-    if (last) updateSyncStatus('前回同期: ' + last);
-    await syncSettingsFromCloud();
-    // ページを開き直したときにも、たまっている打刻を送る
-    await autoSyncPending();
-  }
-})();
-</script>
-</body>
-</html>
+  if (!pending.length) { showToast('未送信データはありません'); return; 
