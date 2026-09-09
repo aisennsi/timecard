@@ -772,16 +772,18 @@ async function doPunch() {
       // ① 送信できなかった場合の警告
       //    打刻自体は端末に残っているので、「消えた」と誤解させないことが大事。
       //    二重打刻を誘発するとデータが余計に壊れる。
-      setCloudBadge('offline', '⚠️ 送信失敗');
-      if (!navigator.onLine) {
-        showBigAlert('📶', 'WiFiをつないでください',
-          '打刻はこの端末に保存されています。<br>' +
-          'WiFiにつなぐと自動で送信されます。' +
-          '<span class="sub">もう一度打刻し直す必要はありません</span>');
-      } else {
-        showBigAlert('📶', '送信できませんでした',
-          'WiFiの接続を確認してください。<br>' +
-          'つながらない場合は店長に報告してください。' +
+      // ★オフラインのときは何も出さない。
+      //   打刻は端末に保存され、ネットに戻れば自動で送られるので、
+      //   毎回警告を出すとスタッフを不必要に不安にさせるだけになる。
+      //   状態は画面上部のバッジ（消えずに残る）で分かる。
+      // ★電波はあるのに送れないときだけ大きく出す。
+      //   これはWiFiの問題ではなく、URLが変わった・上限に達した等の
+      //   システム側の異常で、放置すると全員の打刻が記録されない。
+      setCloudBadge('offline', '⚠️ 未送信');
+      if (navigator.onLine) {
+        showBigAlert('⚠️', '送信できませんでした',
+          '店長に報告してください。<br>' +
+          'ネットにつながっているのに記録を送れていません。' +
           '<span class="sub">打刻はこの端末に保存されています</span>');
       }
     }
@@ -884,11 +886,14 @@ async function confirmMakanai() {
     saveMakanai(loadMakanai().map(m => m.id === rec.id ? Object.assign({}, m, {synced:true}) : m));
     setCloudBadge('online', '☁️ 送信OK');
   } else {
-    setCloudBadge('offline', '⚠️ 送信失敗');
-    showBigAlert('📶', 'WiFiをつないでください',
-      'まかないの記録はこの端末に保存されています。<br>' +
-      'WiFiにつなぐと自動で送信されます。' +
-      '<span class="sub">もう一度押す必要はありません</span>');
+    // 打刻と同じ扱い。オフラインは黙って端末に残し、あとで自動送信する。
+    setCloudBadge('offline', '⚠️ 未送信');
+    if (navigator.onLine) {
+      showBigAlert('⚠️', '送信できませんでした',
+        '店長に報告してください。<br>' +
+        'ネットにつながっているのに記録を送れていません。' +
+        '<span class="sub">まかないの記録はこの端末に保存されています</span>');
+    }
   }
 }
 
@@ -1363,15 +1368,14 @@ async function autoSyncPending() {
 
   if (success + mkOk > 0) {
     setCloudBadge('online', `☁️ ${success + mkOk}件送信OK`);
+    // オフライン時に警告を出さなくなったので、成功の知らせも小さくする。
+    // 何も言われていないのに大きな確認画面が出ると、かえって不安になるため。
     const parts = [];
-    if (success > 0) parts.push(`打刻 <b>${success}件</b>`);
-    if (mkOk    > 0) parts.push(`まかない <b>${mkOk}件</b>`);
-    // 「送れていない」と伝えた以上、送れたことも同じ大きさで伝える
-    showBigAlert('✅', '送信できました',
-      `${parts.join('と')} を送信しました。` +
-      `<span class="sub">そのままお使いいただけます</span>`);
+    if (success > 0) parts.push(`打刻${success}件`);
+    if (mkOk    > 0) parts.push(`まかない${mkOk}件`);
+    showToast(`✅ ${parts.join('・')}を送信しました`);
   } else {
-    setCloudBadge('offline', '⚠️ まだ送信できていません');
+    setCloudBadge('offline', '⚠️ 未送信');
   }
   if (oldCount > 0) updateSyncStatus(`古い未送信が${oldCount}件あります（設定画面の「未送信を再送」で送れます）`);
 }
