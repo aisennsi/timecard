@@ -1297,12 +1297,12 @@ async function syncPending() {
   const pending = recs.filter(r => !r.synced);
   if (!pending.length) { showToast('未送信データはありません'); return; }
   showToast(`⏳ ${pending.length}件を再送中...`);
+  // 1件ずつ保存する（途中で中断されても送信済みの印が残るように）
   let success = 0;
   for (const r of pending) {
     const ok = await sendToCloud({ staffName: r.staffName, type: r.type, rawTime: r.rawTime });
-    if (ok) { r.synced = true; success++; }
+    if (ok) { r.synced = true; success++; saveRecords(recs); }
   }
-  saveRecords(recs);
   showToast(`✅ ${success}/${pending.length}件 送信完了`);
   setCloudBadge(success===pending.length ? 'online':'offline', success===pending.length ? '☁️ 送信OK':'⚠️ 一部失敗');
 }
@@ -1351,20 +1351,34 @@ async function autoSyncPending() {
 
   _autoSyncing = true;
   setCloudBadge('syncing', `⏳ ${target.length + mkPend.length}件を送信中...`);
-  let success = 0;
-  for (const r of target) {
-    const ok = await sendToCloud({ staffName: r.staffName, type: r.type, rawTime: r.rawTime });
-    if (ok) { r.synced = true; success++; }
+  // ★1件送るたびに保存する。
+  //   以前はループが終わってからまとめて保存していたため、
+  //   途中でアプリを閉じたり画面を切り替えたりすると「送信済み」の印が付かず、
+  //   次に開いたときに同じ打刻をまた送っていた（同じ1件が36回送られていた）。
+  //   1件ずつ保存すれば、途中で止まってもそこまでの分は残る。
+  // ★途中で例外が出ても _autoSyncing を必ず戻す（finally）。
+  //   戻し忘れると、そのページを開いている間ずっと自動送信が止まる。
+  let success = 0, mkOk = 0;
+  try {
+    for (const r of target) {
+      const ok = await sendToCloud({ staffName: r.staffName, type: r.type, rawTime: r.rawTime });
+      if (ok) {
+        r.synced = true; success++;
+        saveRecords(recs);   // target の各要素は recs の中身そのもの
+      }
+    }
+    for (const m of mkPend) {
+      const ok = await sendMakanaiToCloud(m);
+      if (ok) {
+        m.synced = true; mkOk++;
+        saveMakanai(mks);
+      }
+    }
+  } catch (e) {
+    // 途中で止まっても、そこまでの分は保存済み。残りは次回に送る。
+  } finally {
+    _autoSyncing = false;
   }
-  saveRecords(recs);   // target の各要素は recs の中身そのものなので、これで反映される
-
-  let mkOk = 0;
-  for (const m of mkPend) {
-    const ok = await sendMakanaiToCloud(m);
-    if (ok) { m.synced = true; mkOk++; }
-  }
-  saveMakanai(mks);
-  _autoSyncing = false;
 
   if (success + mkOk > 0) {
     setCloudBadge('online', `☁️ ${success + mkOk}件送信OK`);
