@@ -722,6 +722,23 @@ async function doPunch() {
   if (!selectedStaffName) { showToast('⚠️ スタッフを選んでください'); return; }
   if (!selectedShift)     { showToast('⚠️ 打刻の種類を選んでください'); return; }
   const now  = new Date();
+
+  // ★連打よけ：直前60秒に同じ人・同じ種類の打刻があれば作らない。
+  //   反応が無いように見えて何度も押されることがあり、実際に28秒で21回
+  //   押されて記録が21件できた（2026-08-30）。
+  //   勤務データは1日1回ぶんしか持たないので、連打しても上書きされるだけ。
+  //   しかも押し直した時刻で上書きされるため、遅い時刻に化けて給与が減る恐れもある。
+  //   打ち直したいときは60秒後にもう一度押せばよい（訂正は管理者がシートで行う運用）。
+  const dupe = loadRecords().find(r =>
+    r.staffName === selectedStaffName &&
+    r.type === selectedShift &&
+    (now - new Date(r.rawTime)) < 60000
+  );
+  if (dupe) {
+    showToast(`すでに記録済みです（${fmtTime(dupe.rawTime)}）`);
+    return;
+  }
+
   const isIn = selectedShift.includes('出勤');
   const rounded = isIn ? roundUp30(now) : roundDown30(now);
   const rec = {
