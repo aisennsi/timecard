@@ -152,6 +152,8 @@ body {
 .makanai-amount{ font-size: 52px; font-weight: 900; color: #dd6b20; line-height: 1.1; margin-bottom: 14px; }
 .makanai-lead  { font-size: 16px; font-weight: 700; color: #2d3748; line-height: 1.7; margin-bottom: 22px; }
 .makanai-btns  { display: flex; gap: 10px; }
+/* .hidden は .modal-overlay 用に限定されているので、ボタン行には専用クラスを使う */
+.makanai-btns.is-hidden { display: none; }
 .makanai-btns button { flex: 1; padding: 16px 8px; border: none; border-radius: 12px; font-size: 16px; font-weight: 800; cursor: pointer; }
 .makanai-cancel { background: #e2e8f0; color: #4a5568; }
 .makanai-ok     { background: #dd6b20; color: white; }
@@ -571,9 +573,14 @@ label:first-child { margin-top: 0; }
     <div class="makanai-name"   id="makanaiName"></div>
     <div class="makanai-amount" id="makanaiAmount"></div>
     <div class="makanai-lead"   id="makanaiLead"></div>
-    <div class="makanai-btns">
-      <button class="makanai-cancel" onclick="closeMakanai()">キャンセル</button>
-      <button class="makanai-ok"     onclick="confirmMakanai()">OK</button>
+    <!-- 確認するとき（金額は出さない） -->
+    <div class="makanai-btns" id="makanaiAsk">
+      <button class="makanai-cancel" onclick="closeMakanai()">いいえ</button>
+      <button class="makanai-ok"     onclick="confirmMakanai()">はい</button>
+    </div>
+    <!-- 記録したあと（ここで初めて金額を出す） -->
+    <div class="makanai-btns is-hidden" id="makanaiDone">
+      <button class="makanai-ok" onclick="closeMakanai()">確認しました</button>
     </div>
   </div>
 </div>
@@ -860,31 +867,49 @@ function updateMakanaiBtn() {
     b.innerHTML = '&#x1F35A; まかない（記録済み）';
     return;
   }
+  // ★ボタンに金額を出さない。
+  //   まかない代は評価（A/B/C）で決まるため、金額がそのまま評価を表す。
+  //   ボタンに出すと、他人の名前をタップするだけで評価が分かってしまう。
   b.className = 'makanai-btn';
-  b.innerHTML = `&#x1F35A; まかない　${makanaiRateOf(selectedStaffName)}円`;
+  b.innerHTML = '&#x1F35A; まかない';
 }
 
+// ★金額を見せるのは「記録したあと」だけ。
+//   確認の段階で出すと、押して → キャンセル、で他人の評価を覗けてしまう。
+//   記録してからなら、覗くには自分以外の記録を作るしかなく、
+//   「まかない記録」シートに残り、1日1食制限で本人が押せなくなるので必ず発覚する。
 function openMakanai() {
   if (!selectedStaffName) { showToast('⚠️ スタッフを選んでください'); return; }
   if (makanaiDoneToday(selectedStaffName)) {
     showToast('本日は記録済みです（1日1食まで）');
     return;
   }
-  const yen = makanaiRateOf(selectedStaffName);
   document.getElementById('makanaiName').textContent   = selectedStaffName + 'さん';
-  document.getElementById('makanaiAmount').textContent = yen + '円';
-  document.getElementById('makanaiLead').innerHTML =
-    `まかないの金額 <b>${yen}円</b> を、<br>店長に渡してください`;
+  document.getElementById('makanaiAmount').textContent = '🍚';
+  document.getElementById('makanaiLead').innerHTML     = 'まかないを食べますか？';
+  document.getElementById('makanaiAsk').classList.remove('is-hidden');
+  document.getElementById('makanaiDone').classList.add('is-hidden');
   document.getElementById('makanaiModal').classList.remove('hidden');
 }
+
+// 記録できたあとに、金額を出す画面へ切り替える
+function showMakanaiResult(name, yen) {
+  document.getElementById('makanaiName').textContent   = name + 'さん';
+  document.getElementById('makanaiAmount').textContent = yen + '円';
+  document.getElementById('makanaiLead').innerHTML =
+    `記録しました。<br><b>${yen}円</b> を店長に渡してください`;
+  document.getElementById('makanaiAsk').classList.add('is-hidden');
+  document.getElementById('makanaiDone').classList.remove('is-hidden');
+  document.getElementById('makanaiModal').classList.remove('hidden');
+}
+
 function closeMakanai() {
   document.getElementById('makanaiModal').classList.add('hidden');
 }
 
 async function confirmMakanai() {
   const name = selectedStaffName;
-  closeMakanai();
-  if (!name || makanaiDoneToday(name)) return;
+  if (!name || makanaiDoneToday(name)) { closeMakanai(); return; }
 
   const now = new Date();
   // タップした時点の単価を確定して保存する（後から掛け直さない）
@@ -894,7 +919,9 @@ async function confirmMakanai() {
   };
   const list = loadMakanai(); list.push(rec); saveMakanai(list);
   updateMakanaiBtn();
-  showToast(`✅ ${name}さんのまかない ${rec.amount}円 を記録しました`);
+
+  // 記録できてから金額を出す
+  showMakanaiResult(name, rec.amount);
 
   const url = loadWebAppUrl();
   if (!url) return;
