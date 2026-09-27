@@ -325,6 +325,26 @@ label:first-child { margin-top: 0; }
   font-size: 19px; font-weight: 800; cursor: pointer;
 }
 .alert-btn:active { transform: scale(0.98); }
+/* 確認つきの警告（「本当に退勤ですか？」）の2つのボタン */
+.alert-btns { display: flex; flex-direction: column; gap: 10px; }
+.alert-btn.sub-btn {
+  background: #edf2f7; color: #2d3748;
+  border: 2px solid #cbd5e0;
+}
+/* 未送信の打刻があることを、打刻画面にずっと出しておく帯 */
+.unsent-bar {
+  display: none;
+  background: #fff5f5; border: 3px solid #c53030; border-radius: 14px;
+  padding: 14px 16px; margin-bottom: 14px;
+  color: #c53030; font-size: 16px; font-weight: 800; text-align: center;
+}
+.unsent-bar.show { display: block; }
+.unsent-bar button {
+  margin-top: 10px; width: 100%; padding: 12px;
+  border: none; border-radius: 10px;
+  background: #c53030; color: white; font-size: 16px; font-weight: 800; cursor: pointer;
+}
+.unsent-bar .unsent-sub { display: block; font-size: 13px; font-weight: 600; color: #742a2a; margin-top: 6px; }
 @media (max-width: 400px) {
   /* 「WiFiをつないでください」が2行に折れて読みにくくなるため、
      小さい画面では字間を詰めて1行に収める */
@@ -379,6 +399,11 @@ label:first-child { margin-top: 0; }
 <div class="content">
   <!-- 打刻タブ -->
   <div id="tab-punch" class="tab active">
+    <div class="unsent-bar" id="unsentBar">
+      <span id="unsentText"></span>
+      <span class="unsent-sub">この画面を開いたままにすると自動で送られます</span>
+      <button onclick="autoSyncPending()">&#x1F4E4; 今すぐ送る</button>
+    </div>
     <div class="card">
       <div class="card-title">&#x1F464; スタッフ選択</div>
       <div class="punch-staff-grid" id="punchStaffGrid">
@@ -584,6 +609,18 @@ label:first-child { margin-top: 0; }
     </div>
   </div>
 </div>
+<!-- 「本当に退勤ですか？」の確認（打刻する前に出す） -->
+<div class="alert-overlay hidden" id="bigConfirm">
+  <div class="alert-box">
+    <div class="alert-icon"  id="confirmIcon">&#x1F6A8;</div>
+    <div class="alert-title" id="confirmTitle"></div>
+    <div class="alert-msg"   id="confirmMsg"></div>
+    <div class="alert-btns">
+      <button class="alert-btn sub-btn" id="confirmNo"  onclick="answerBigConfirm(false)"></button>
+      <button class="alert-btn"         id="confirmYes" onclick="answerBigConfirm(true)"></button>
+    </div>
+  </div>
+</div>
 <!-- 大きな警告（打刻忘れ・通信エラー） -->
 <div class="alert-overlay hidden" id="bigAlert">
   <div class="alert-box">
@@ -728,6 +765,8 @@ function selectShift(type) {
 async function doPunch() {
   if (!selectedStaffName) { showToast('⚠️ スタッフを選んでください'); return; }
   if (!selectedShift)     { showToast('⚠️ 打刻の種類を選んでください'); return; }
+  const name = selectedStaffName;   // 押した瞬間の選択を控える
+  const type = selectedShift;       // （記録したあとに選択を消すため）
   const now  = new Date();
 
   // ★連打よけ：直前60秒に同じ人・同じ種類の打刻があれば作らない。
@@ -737,8 +776,8 @@ async function doPunch() {
   //   しかも押し直した時刻で上書きされるため、遅い時刻に化けて給与が減る恐れもある。
   //   打ち直したいときは60秒後にもう一度押せばよい（訂正は管理者がシートで行う運用）。
   const dupe = loadRecords().find(r =>
-    r.staffName === selectedStaffName &&
-    r.type === selectedShift &&
+    r.staffName === name &&
+    r.type === type &&
     (now - new Date(r.rawTime)) < 60000
   );
   if (dupe) {
@@ -746,52 +785,94 @@ async function doPunch() {
     return;
   }
 
-  const isIn = selectedShift.includes('出勤');
-  const rounded = isIn ? roundUp30(now) : roundDown30(now);
-  const rec = {
-    id: Date.now(), staffName: selectedStaffName, type: selectedShift,
-    rawTime: now.toISOString(), roundedTime: rounded.toISOString(),
-    date: fmtDate(now), synced: false
-  };
-  // ② 出勤を押さずに退勤が押された場合の警告
-  //    出勤が無いと勤務時間が計算されず、給与に反映されないため必ず気づかせる。
-  //    打刻自体は止めない（止めると記録が何も残らなくなる）。
+  const isIn = type.includes('出勤');
+
+  // ② 出勤を押さずに退勤が押されそうなときは、記録する「前」に止めて聞く
+  //    前の人の「退勤」が選ばれたまま残っていて、次の人が自分の名前だけ押して
+  //    そのまま大きなボタンを押すと、出勤のつもりが退勤で記録されてしまう。
+  //    （実際に「退勤だけある行」が出ていた）
+  //    ここで止めれば、選び直してもらえる。押し忘れの場合も、この時刻で
+  //    勝手に出勤を作らない（正しい出勤時刻は本人と店長で直す）。
   if (!isIn) {
-    const needType = selectedShift.includes('昼') ? '昼出勤' : '夜出勤';
+    const needType = type.includes('昼') ? '昼出勤' : '夜出勤';
     const today    = fmtDate(now);
     const hasIn    = loadRecords().some(r =>
-      r.staffName === selectedStaffName &&
+      r.staffName === name &&
       r.date === today &&
       r.type.replace(/[\s　]/g, '') === needType
     );
     if (!hasIn) {
+      const go = await showBigConfirm('🚨', '本当に退勤ですか？',
+        `${name}さんの<br><b>${needType}</b>がまだ押されていません。<br><br>` +
+        `いま押そうとしているのは<br><b>${type}（${fmtTime(now)}）</b>です。` +
+        `<span class="sub">出勤のつもりなら「いいえ」を押して、種類を選び直してください</span>`,
+        'はい、退勤を記録する', 'いいえ（選び直す）');
+      if (!go) {
+        selectedShift = '';
+        document.querySelectorAll('.shift-btn').forEach(b => b.classList.remove('selected'));
+        document.getElementById('punchResult').style.display = 'none';
+        updatePunchBtn();
+        showToast('打刻の種類を選び直してください');
+        return;
+      }
+      // 「はい」を選んだときは記録する。そのうえで店長への報告を促す。
       showBigAlert('🚨', '店長に報告してください',
-        `${selectedStaffName}さんの<br><b>${needType}</b>が押されていません。<br><br>` +
+        `${name}さんの<br><b>${needType}</b>が押されていません。<br><br>` +
         `このままだと勤務時間が計算されず、<br>お給料に反映されません。` +
         `<span class="sub">退勤の打刻は記録しました</span>`);
     }
   }
 
+  const rounded = isIn ? roundUp30(now) : roundDown30(now);
+  const rec = {
+    id: Date.now(), staffName: name, type: type,
+    rawTime: now.toISOString(), roundedTime: rounded.toISOString(),
+    date: fmtDate(now), synced: false
+  };
   const recs = loadRecords(); recs.push(rec); saveRecords(recs);
   const re = document.getElementById('punchResult');
   re.className = 'punch-result' + (isIn ? '' : ' out-result');
   re.style.display = 'block';
-  document.getElementById('resultName').textContent = selectedStaffName + 'さん';
+  document.getElementById('resultName').textContent = name + 'さん';
   const badge = document.getElementById('resultBadge');
-  badge.textContent = selectedShift;
+  badge.textContent = type;
   badge.className = 'result-type-badge' + (isIn ? '' : ' out');
   document.getElementById('resultTime').textContent    = fmtTime(now);
   document.getElementById('resultRounded').textContent = fmtTime(rounded);
-  showToast(`✅ ${selectedStaffName}さんの${selectedShift}を記録しました`);
+  showToast(`✅ ${name}さんの${type}を記録しました`);
+
+  // ★押したあとは、名前も種類も選んでいない状態に戻す。
+  //   選びっぱなしだと、次の人が名前だけ押して前の人の「退勤」で打ってしまう。
+  clearPunchSelection();
   updateSelects();
+  updateUnsentBar();
+
   const url = loadWebAppUrl();
   if (url) {
     setCloudBadge('syncing', '⏳ 送信中...');
-    const ok = await sendToCloud({ staffName: selectedStaffName, type: selectedShift, rawTime: now.toISOString() });
-    if (ok) {
+    // この打刻は自分で送るので、自動送信には拾わせない（先に印を付けておく）
+    _inflight.add(rec.id);
+    const hasLocalIn = localHasInFor(name, type, rec.date);
+    let res;
+    try {
+      // 同じ日のまだ届いていない打刻（ふつうは出勤）を先に送る
+      await flushEarlierFor(name, rec.date, rec.id);
+      res = await sendToCloud({ staffName: name, type: type, rawTime: now.toISOString(),
+                                hasLocalIn: hasLocalIn });
+    } finally {
+      _inflight.delete(rec.id);
+    }
+    if (res.ok) {
       const updated = loadRecords().map(r => r.id === rec.id ? Object.assign({}, r, {synced:true}) : r);
       saveRecords(updated);
       setCloudBadge('online', '☁️ 送信OK');
+      updateUnsentBar();
+      // スプレッドシート側で見つかった問題（別の端末で出勤を押した場合も分かる）
+      // この端末に出勤があるなら、届くのが遅れているだけなので出さない
+      if (res.warn && !hasLocalIn) {
+        showBigAlert('🚨', '店長に報告してください',
+          `${res.warn}。<br><br>このままだと勤務時間が計算されず、<br>お給料に反映されません。`);
+      }
     } else {
       // ① 送信できなかった場合の警告
       //    打刻自体は端末に残っているので、「消えた」と誤解させないことが大事。
@@ -799,11 +880,12 @@ async function doPunch() {
       // ★オフラインのときは何も出さない。
       //   打刻は端末に保存され、ネットに戻れば自動で送られるので、
       //   毎回警告を出すとスタッフを不必要に不安にさせるだけになる。
-      //   状態は画面上部のバッジ（消えずに残る）で分かる。
+      //   状態は画面上部の赤い帯とバッジ（消えずに残る）で分かる。
       // ★電波はあるのに送れないときだけ大きく出す。
       //   これはWiFiの問題ではなく、URLが変わった・上限に達した等の
       //   システム側の異常で、放置すると全員の打刻が記録されない。
       setCloudBadge('offline', '⚠️ 未送信');
+      updateUnsentBar();
       if (navigator.onLine) {
         showBigAlert('⚠️', '送信できませんでした',
           '店長に報告してください。<br>' +
@@ -811,6 +893,29 @@ async function doPunch() {
           '<span class="sub">打刻はこの端末に保存されています</span>');
       }
     }
+  }
+}
+// 名前・種類の選択を消す（押しっぱなしの取り違えを防ぐ）
+function clearPunchSelection() {
+  selectedStaffName = '';
+  selectedShift     = '';
+  document.querySelectorAll('.staff-name-btn').forEach(b => b.classList.remove('selected'));
+  document.querySelectorAll('.shift-btn').forEach(b => b.classList.remove('selected'));
+  updatePunchBtn();
+  updateMakanaiBtn();
+}
+// 未送信の打刻が残っていることを、打刻画面に出しっぱなしにする
+function updateUnsentBar() {
+  const bar = document.getElementById('unsentBar');
+  if (!bar) return;
+  // Web App URL が未設定のときは「未送信」ではなく「連携していない」だけなので出さない
+  if (!loadWebAppUrl()) { bar.classList.remove('show'); return; }
+  const n = loadRecords().filter(r => !r.synced).length;
+  if (n > 0) {
+    document.getElementById('unsentText').textContent = `⚠️ まだ送れていない打刻が ${n}件 あります`;
+    bar.classList.add('show');
+  } else {
+    bar.classList.remove('show');
   }
 }
 // ============================================================
@@ -1299,12 +1404,75 @@ function closeBigAlert() {
   if (_alertQueue.length) { _renderBigAlert(); return; }
   document.getElementById('bigAlert').classList.add('hidden');
 }
+// 打刻する「前」に止めて聞く確認画面。
+// あとから警告を出すだけでは、間違った打刻がそのまま残ってしまうため。
+let _confirmResolve = null;
+function showBigConfirm(icon, title, msg, yesText, noText) {
+  return new Promise(resolve => {
+    _confirmResolve = resolve;
+    document.getElementById('confirmIcon').textContent  = icon;
+    document.getElementById('confirmTitle').textContent = title;
+    document.getElementById('confirmMsg').innerHTML     = msg;
+    document.getElementById('confirmYes').textContent   = yesText;
+    document.getElementById('confirmNo').textContent    = noText;
+    document.getElementById('bigConfirm').classList.remove('hidden');
+  });
+}
+function answerBigConfirm(yes) {
+  document.getElementById('bigConfirm').classList.add('hidden');
+  const f = _confirmResolve; _confirmResolve = null;
+  if (f) f(yes);
+}
 // ============================================================
 //  クラウド連携
 // ============================================================
-async function sendToCloud(data) {
+// 戻り値は { ok, warn }。
+// warn はスプレッドシート側で見つかった問題（出勤が無いのに退勤だけ 等）。
+// 端末に残っている記録ではなく「最終的な正」で判定した結果なので、
+// 別の端末で押した場合や、キャッシュを消した場合でも取りこぼさない。
+// ★打刻の送信は1件ずつ順番に行う。
+//   退勤を押した瞬間の送信と、たまっていた出勤の自動送信が同時に走ると、
+//   サーバー側で行の追加と並べ替えがぶつかり、出勤が日付も名前も無い行に
+//   書き込まれて迷子になった（2026-09-27 岡崎さんの昼出勤）。
+//   送る側でも順番を守り、サーバー側でもロックをかける（WebApp_Code.js）。
+let _sendChain = Promise.resolve();
+const _inflight = new Set();   // いま送っている打刻の id（自動送信が同じものを重ねて送らないように）
+function sendToCloud(data) {
+  const p = _sendChain.then(() => _sendToCloudNow(data));
+  _sendChain = p.catch(() => {});
+  return p;
+}
+// 退勤の打刻について「この端末に同じ日の出勤があるか」
+function localHasInFor(staffName, type, date) {
+  if (!type || type.includes('出勤')) return false;
+  const needType = type.includes('昼') ? '昼出勤' : '夜出勤';
+  return loadRecords().some(r =>
+    r.staffName === staffName && r.date === date &&
+    r.type.replace(/[\s\u3000]/g, '') === needType);
+}
+// 同じ人・同じ日のまだ送れていない打刻を、古い順に先に送る
+// （退勤より先に出勤を届けるため）
+async function flushEarlierFor(staffName, date, exceptId) {
+  const earlier = loadRecords()
+    .filter(r => !r.synced && r.id !== exceptId && r.staffName === staffName &&
+                 r.date === date && !_inflight.has(r.id))
+    .sort((a, b) => new Date(a.rawTime) - new Date(b.rawTime));
+  for (const r of earlier) {
+    _inflight.add(r.id);
+    try {
+      const res = await sendToCloud({ staffName: r.staffName, type: r.type, rawTime: r.rawTime,
+                                      hasLocalIn: localHasInFor(r.staffName, r.type, r.date) });
+      if (res.ok) {
+        saveRecords(loadRecords().map(x => x.id === r.id ? Object.assign({}, x, { synced: true }) : x));
+      }
+    } finally {
+      _inflight.delete(r.id);
+    }
+  }
+}
+async function _sendToCloudNow(data) {
   const url = loadWebAppUrl();
-  if (!url) return false;
+  if (!url) return { ok: false, warn: '' };
   try {
     const res = await fetch(url, {
       method: 'POST', redirect: 'follow',
@@ -1312,8 +1480,8 @@ async function sendToCloud(data) {
       body: JSON.stringify(data)
     });
     const json = await res.json();
-    return json.status === 'ok';
-  } catch(e) { return false; }
+    return { ok: json.status === 'ok', warn: json.warn || '' };
+  } catch(e) { return { ok: false, warn: '' }; }
 }
 async function testConnection() {
   const url = loadWebAppUrl();
@@ -1343,10 +1511,13 @@ async function syncPending() {
   showToast(`⏳ ${pending.length}件を再送中...`);
   // 1件ずつ保存する（途中で中断されても送信済みの印が残るように）
   let success = 0;
+  pending.sort((a, b) => new Date(a.rawTime) - new Date(b.rawTime));   // 古い順（出勤を先に）
   for (const r of pending) {
-    const ok = await sendToCloud({ staffName: r.staffName, type: r.type, rawTime: r.rawTime });
+    const ok = (await sendToCloud({ staffName: r.staffName, type: r.type, rawTime: r.rawTime,
+                                    hasLocalIn: localHasInFor(r.staffName, r.type, r.date) })).ok;
     if (ok) { r.synced = true; success++; saveRecords(recs); }
   }
+  updateUnsentBar();
   showToast(`✅ ${success}/${pending.length}件 送信完了`);
   setCloudBadge(success===pending.length ? 'online':'offline', success===pending.length ? '☁️ 送信OK':'⚠️ 一部失敗');
 }
@@ -1376,10 +1547,13 @@ async function autoSyncPending() {
   //   URL未設定だった頃の記録などが大量に残っていることがあり、
   //   全部流すと時間がかかるうえ、今の打刻の邪魔になる。
   //   まとめて送りたいときは設定画面の「未送信を再送」を使う。
+  // ★選ぶのは新しい順（今の打刻を後回しにしない）、送るのは古い順。
+  //   新しい順に送ると、退勤が出勤より先に届いて「出勤が無い」と判定される。
   const target = unsent
-    .filter(r => new Date(r.rawTime).getTime() >= border)
+    .filter(r => new Date(r.rawTime).getTime() >= border && !_inflight.has(r.id))
     .sort((a, b) => new Date(b.rawTime) - new Date(a.rawTime))
-    .slice(0, AUTO_SYNC_LIMIT);
+    .slice(0, AUTO_SYNC_LIMIT)
+    .reverse();
 
   const oldCount = unsent.length - unsent.filter(r => new Date(r.rawTime).getTime() >= border).length;
 
@@ -1403,12 +1577,23 @@ async function autoSyncPending() {
   // ★途中で例外が出ても _autoSyncing を必ず戻す（finally）。
   //   戻し忘れると、そのページを開いている間ずっと自動送信が止まる。
   let success = 0, mkOk = 0;
+  const warns = [];
   try {
     for (const r of target) {
-      const ok = await sendToCloud({ staffName: r.staffName, type: r.type, rawTime: r.rawTime });
-      if (ok) {
+      if (_inflight.has(r.id) || r.synced) continue;   // 打刻ボタン側がいま送っている
+      _inflight.add(r.id);
+      let res;
+      try {
+        res = await sendToCloud({ staffName: r.staffName, type: r.type, rawTime: r.rawTime,
+                                  hasLocalIn: localHasInFor(r.staffName, r.type, r.date) });
+      } finally {
+        _inflight.delete(r.id);
+      }
+      if (res.ok) {
+        // 打刻ボタン側が同じ時間に保存していることがあるので、最新を読み直して印を付ける
+        saveRecords(loadRecords().map(x => x.id === r.id ? Object.assign({}, x, { synced: true }) : x));
         r.synced = true; success++;
-        saveRecords(recs);   // target の各要素は recs の中身そのもの
+        if (res.warn) warns.push(res.warn);
       }
     }
     for (const m of mkPend) {
@@ -1424,6 +1609,10 @@ async function autoSyncPending() {
     _autoSyncing = false;
   }
 
+  updateUnsentBar();
+  // あとから送った打刻でも、片方だけの打刻は必ず知らせる（給与の取りこぼしになるため）
+  warns.slice(0, 2).forEach(w => showBigAlert('🚨', '店長に報告してください',
+    `${w}。<br><br>このままだと勤務時間が計算されず、<br>お給料に反映されません。`));
   if (success + mkOk > 0) {
     setCloudBadge('online', `☁️ ${success + mkOk}件送信OK`);
     // オフライン時に警告を出さなくなったので、成功の知らせも小さくする。
@@ -1439,6 +1628,16 @@ async function autoSyncPending() {
 }
 // ネットにつながった瞬間に送る
 window.addEventListener('online', () => { autoSyncPending(); });
+// ★開いている間は1分ごとに送り直す。
+//   打刻した瞬間の送信は、電波が弱い・押してすぐ画面を閉じた等でよく失敗する。
+//   実際に、昼の打刻が夕方にアプリを開くまでスプレッドシートに入っていなかった
+//   （打刻ログの「記録日時」が実際の打刻より数時間遅い日が続いていた）。
+//   画面を開いたままにしておけば、1分以内に送られる。
+setInterval(() => { autoSyncPending(); }, 60000);
+// 画面に戻ってきたとき（別のアプリから切り替えた・スリープ復帰）にも送る
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) autoSyncPending();
+});
 
 // ============================================================
 //  古い未送信の整理
@@ -1580,6 +1779,7 @@ document.addEventListener('keydown', function(e) {
 renderStaff();
 updateSelects();
 updateCloudBadge();
+updateUnsentBar();
 (async () => {
   const url = loadWebAppUrl();
   if (url) {
