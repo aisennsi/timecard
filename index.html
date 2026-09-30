@@ -512,7 +512,7 @@ label:first-child { margin-top: 0; }
       <div style="font-size:13px;font-weight:700;color:#4a5568;margin-bottom:8px;">&#x2699;&#xFE0F; 設定の同期（スタッフ・時給・PIN）</div>
       <div style="display:flex;gap:10px;">
         <button class="btn btn-blue" style="flex:1;" onclick="syncSettingsFromCloud()">&#x1F4E5; クラウドから取得</button>
-        <button class="btn btn-gray"  style="flex:1;" onclick="pushSettingsToCloud()">&#x1F4E4; クラウドへ保存</button>
+        <button class="btn btn-gray"  style="flex:1;" onclick="pushAllSettingsConfirm()">&#x1F4E4; クラウドへ保存</button>
       </div>
       <div id="syncStatus" style="font-size:12px;color:#8e8e93;margin-top:8px;min-height:18px;"></div>
     </div>
@@ -670,7 +670,8 @@ const saveSettings  = () => {
     staffRates: cur.staffRates || {}
   });
   showToast('設定を保存しました');
-  pushSettingsToCloud();
+  const ns = loadSettings();
+  pushSettingsToCloud({ set: { hourlyRate: ns.hourlyRate, cutoffDay: ns.cutoffDay } });
 };
 const loadPin = () => load(KEY_PIN, '1234');
 // ============================================================
@@ -1127,7 +1128,7 @@ function changePin() {
   save(KEY_PIN, v);
   document.getElementById('newPin').value = '';
   showToast('✅ PINを変更しました');
-  pushSettingsToCloud();
+  pushSettingsToCloud({ set: { pin: v } });
 }
 // ============================================================
 //  管理者タブ切り替え
@@ -1316,7 +1317,10 @@ function saveEditStaff() {
   renderStaff();
   const rateMsg = newRateRaw > 0 ? ` 時給¥${newRateRaw.toLocaleString()}` : '';
   showToast(`✅ 「${_editingStaff}」→「${newName}」${rateMsg} に変更しました`);
-  pushSettingsToCloud();
+  pushSettingsToCloud({
+    staffRename: [_editingStaff, newName],
+    makanai: { from: _editingStaff, to: newName, value: mkRaw }
+  });
 }
 function addStaff() {
   const inp=document.getElementById('newStaffName'), name=inp.value.trim();
@@ -1326,7 +1330,7 @@ function addStaff() {
   if(staff.length>=10){ showToast('⚠️ 最大10人まで'); return; }
   staff.push(name); saveStaff(staff); inp.value='';
   renderStaff(); showToast(`✅ ${name}さんを追加しました`);
-  pushSettingsToCloud();
+  pushSettingsToCloud({ staffAdd: name });
 }
 function removeStaff(name) {
   if(!confirm(`${name}さんを削除しますか？`)) return;
@@ -1337,7 +1341,7 @@ function removeStaff(name) {
   delete rates[name];
   save(KEY_SETTINGS, Object.assign({}, s, { staffRates: rates }));
   renderStaff(); showToast(`${name}さんを削除しました`);
-  pushSettingsToCloud();
+  pushSettingsToCloud({ staffRemove: name });
 }
 // ============================================================
 //  データ管理
@@ -1702,9 +1706,9 @@ function updateSyncStatus(msg) {
   const el = document.getElementById('syncStatus');
   if (el) el.textContent = msg;
 }
-async function syncSettingsFromCloud() {
+async function syncSettingsFromCloud(quiet) {
   const url = loadWebAppUrl();
-  if (!url) { showToast('⚠️ Web App URLを設定してください'); return; }
+  if (!url) { if (!quiet) showToast('⚠️ Web App URLを設定してください'); return; }
   updateSyncStatus('⏳ クラウドから取得中...');
   try {
     const res = await fetch(url + '?action=getSettings', { redirect: 'follow' });
@@ -1732,7 +1736,7 @@ async function syncSettingsFromCloud() {
       const ts = pad2(now.getHours())+':'+pad2(now.getMinutes());
       save(KEY_SYNC_TIME, ts);
       updateSyncStatus('✅ 最終同期: ' + ts);
-      showToast('✅ 設定をクラウドから取得しました');
+      if (!quiet) showToast('✅ 設定をクラウドから取得しました');
     } else {
       updateSyncStatus('⚠️ クラウドに設定がありません');
     }
@@ -1741,14 +1745,63 @@ async function syncSettingsFromCloud() {
     showToast('⚠️ クラウドへの接続に失敗しました');
   }
 }
-async function pushSettingsToCloud() {
+// ★設定は「変えた項目だけ」を、クラウドの最新に重ねて送る。
+//   以前は、時給を1つ変えただけでも、この端末が持っているスタッフ一覧・PIN・まかない代まで
+//   まとめて送っていた。設定が古い端末で時給を変えると、ほかの設定が古いもので上書きされる。
+//   2026-10-01、時給を1108円に変えたとき、まかない代（評価で決めた10月分）が空で上書きされた。
+//   change を渡さないとき（手動の「クラウドへ保存」）だけ、この端末の設定をまるごと送る。
+async function _fetchCloudSettings() {
+  const url = loadWebAppUrl();
+  if (!url) return null;
+  const res  = await fetch(url + '?action=getSettings', { redirect: 'follow' });
+  const json = await res.json();
+  return (json.status === 'ok' && json.settings) ? json.settings : null;
+}
+function pushAllSettingsConfirm() {
+  if (!confirm('この端末の設定（スタッフ・時給・PIN・まかない代）で、クラウドをまるごと上書きします。\n\n' +
+               '先に「クラウドから取得」をしていないと、ほかの端末や評価アプリで変えた内容が消えます。\n\n' +
+               '上書きしますか？')) return;
+  pushSettingsToCloud();
+}
+async function pushSettingsToCloud(change) {
   const url = loadWebAppUrl();
   if (!url) return;
-  const s = loadSettings();
-  const payload = {
-    action: 'saveSettings',
-    settings: { staff: loadStaff(), hourlyRate: s.hourlyRate, cutoffDay: s.cutoffDay, pin: loadPin(), makanaiRates: s.makanaiRates || {} }
-  };
+  let settings;
+  if (!change) {
+    const s = loadSettings();
+    settings = { staff: loadStaff(), hourlyRate: s.hourlyRate, cutoffDay: s.cutoffDay, pin: loadPin(), makanaiRates: s.makanaiRates || {} };
+  } else {
+    let cloud = null;
+    try { cloud = await _fetchCloudSettings(); } catch (e) {}
+    if (!cloud) {
+      // クラウドの最新が分からないまま送ると上書き事故になるので、送らない
+      updateSyncStatus('⚠️ クラウドにつながらず、送れませんでした（この端末には保存済み）');
+      showToast('⚠️ クラウドに送れませんでした。つながってから、もう一度保存してください');
+      return;
+    }
+    // スタッフと時給はいつも付ける（サーバー側で給与計算シートの時給を合わせるのに使う）
+    let st = Array.isArray(cloud.staff) ? cloud.staff.slice() : loadStaff();
+    if (change.staffAdd && !st.includes(change.staffAdd)) st.push(change.staffAdd);
+    if (change.staffRemove) st = st.filter(n => n !== change.staffRemove);
+    if (change.staffRename) {
+      const [from, to] = change.staffRename;
+      const i = st.indexOf(from);
+      if (i >= 0) st[i] = to; else if (!st.includes(to)) st.push(to);
+    }
+    settings = {
+      staff: st,
+      hourlyRate: cloud.hourlyRate !== undefined ? cloud.hourlyRate : loadSettings().hourlyRate,
+      staffRates: cloud.staffRates || {}
+    };
+    Object.assign(settings, change.set || {});
+    if (change.makanai) {
+      const mk = Object.assign({}, cloud.makanaiRates || {});
+      if (change.makanai.from) delete mk[change.makanai.from];
+      if (change.makanai.value > 0) mk[change.makanai.to] = change.makanai.value;
+      settings.makanaiRates = mk;
+    }
+  }
+  const payload = { action: 'saveSettings', settings: settings };
   try {
     const res = await fetch(url, {
       method: 'POST', redirect: 'follow',
@@ -1761,6 +1814,7 @@ async function pushSettingsToCloud() {
       const ts = pad2(now.getHours())+':'+pad2(now.getMinutes());
       save(KEY_SYNC_TIME, ts);
       updateSyncStatus('✅ 最終同期: ' + ts);
+      if (change) await syncSettingsFromCloud(true);   // この端末もクラウドの最新にそろえる
     }
   } catch(e) { /* 静かに無視 */ }
 }
