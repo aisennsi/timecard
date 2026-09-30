@@ -1776,6 +1776,12 @@ document.addEventListener('keydown', function(e) {
 // ============================================================
 //  初期化
 // ============================================================
+// ★電波が無くても画面を開けるようにする（sw.js が画面を端末にしまっておく）
+//   これが無いと、アプリを閉じて開き直したとき、電波の無い場所では起動しない。
+//   打刻そのものは今までどおり端末に保存され、つながったときに送られる。
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(() => {});
+}
 renderStaff();
 updateSelects();
 updateCloudBadge();
