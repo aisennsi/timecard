@@ -15,14 +15,14 @@
 // ★画面を直したら CACHE の番号を1つ上げる必要はない
 //   （いつも「まずネット」なので、電波があれば最新版に入れ替わる）。
 // =========================================
-const CACHE = 'timecard-app-v1';
+const CACHE = 'timecard-app-v2';   // index.html の SW_CACHE と同じ名前にすること
 const APP_SHELL = ['./', './index.html'];
 const NET_TIMEOUT_MS = 4000;   // これ以上待っても返事が無ければ、しまっておいた版を出す
 
 self.addEventListener('install', (e) => {
   e.waitUntil(
     caches.open(CACHE)
-      .then((c) => c.addAll(APP_SHELL))
+      .then((c) => c.addAll(APP_SHELL.map((u) => new Request(u, { cache: 'reload' }))))
       .then(() => self.skipWaiting())
   );
 });
@@ -62,8 +62,10 @@ async function networkFirst(req) {
     // 電波が無い → 下でしまっておいた版を出す
   }
 
-  const saved = (await cache.match(req, { ignoreSearch: true })) ||
-                (await cache.match('./index.html'));
+  const opt = { ignoreSearch: true, ignoreVary: true };
+  const saved = (await cache.match(req, opt)) ||
+                // 画面を開く要求なら、アドレスが少し違っても（/timecard/ と /timecard/index.html 等）同じ画面を出す
+                (req.mode === 'navigate' ? ((await cache.match('./', opt)) || (await cache.match('./index.html', opt))) : null);
   if (saved) return saved;
 
   // しまっておいた版も無い（初めて開いたのが電波の無い場所）ときは、ネットを待つしかない

@@ -198,6 +198,9 @@ body {
 @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
 /* ===== FABボタン ===== */
 .fab { text-align: center; margin-top: 14px; margin-bottom: 4px; }
+/* 電波が無くても開ける状態かどうか（端末ごとの確認用） */
+.sw-status { text-align: center; font-size: 11px; color: #a0aec0; margin-top: 10px; word-break: break-all; }
+.sw-status.ng { color: #c53030; font-weight: 700; }
 .fab-lock {
   background: #c53030; color: white;
   border: none; border-radius: 50px;
@@ -444,6 +447,7 @@ label:first-child { margin-top: 0; }
     <div class="fab" id="fabArea">
       <button class="fab-lock" id="fabBtn" onclick="openPinModal()">&#x1F512; 管理者</button>
     </div>
+    <div class="sw-status" id="swStatus"></div>
   </div>
   <!-- 勤務記録タブ -->
   <div id="tab-records" class="tab">
@@ -1779,9 +1783,39 @@ document.addEventListener('keydown', function(e) {
 // ★電波が無くても画面を開けるようにする（sw.js が画面を端末にしまっておく）
 //   これが無いと、アプリを閉じて開き直したとき、電波の無い場所では起動しない。
 //   打刻そのものは今までどおり端末に保存され、つながったときに送られる。
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js').catch(() => {});
+const SW_CACHE = 'timecard-app-v2';   // sw.js の CACHE と同じ名前にすること
+async function updateSwStatus(note) {
+  const el = document.getElementById('swStatus');
+  if (!el) return;
+  // 端末ごとに「電波が無くても開ける状態か」を確かめられるようにする。
+  // 開けないと言われたとき、どこで止まっているかを画面で見て判断するため（2026-09-30）
+  if (!('serviceWorker' in navigator)) {
+    el.className = 'sw-status ng';
+    el.textContent = '⚠️ このブラウザは電波なしの起動に対応していません（' + location.href + '）';
+    return;
+  }
+  let reg = null, cached = 0;
+  try { reg = await navigator.serviceWorker.getRegistration(); } catch (e) {}
+  try { cached = (await (await caches.open(SW_CACHE)).keys()).length; } catch (e) {}
+  const ctrl = !!navigator.serviceWorker.controller;
+  if (reg && ctrl && cached > 0) {
+    el.className = 'sw-status';
+    el.textContent = '📴 電波が無くても開けます';
+  } else {
+    el.className = 'sw-status ng';
+    el.textContent = '⚠️ 電波なしの起動：準備中（' +
+      (reg ? '登録OK' : '未登録') + '・' + (ctrl ? '動作中' : '未動作') + '・保存' + cached + '件' +
+      (note ? '・' + note : '') + '）' + location.href;
+  }
 }
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js')
+    .then(() => navigator.serviceWorker.ready)
+    .then(() => setTimeout(() => updateSwStatus(), 1500))
+    .catch((e) => updateSwStatus('登録エラー: ' + (e && e.message)));
+  navigator.serviceWorker.addEventListener('controllerchange', () => updateSwStatus());
+}
+updateSwStatus();
 renderStaff();
 updateSelects();
 updateCloudBadge();
