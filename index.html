@@ -402,11 +402,6 @@ label:first-child { margin-top: 0; }
 <div class="content">
   <!-- 打刻タブ -->
   <div id="tab-punch" class="tab active">
-    <div class="unsent-bar" id="unsentBar">
-      <span id="unsentText"></span>
-      <span class="unsent-sub">この画面を開いたままにすると自動で送られます</span>
-      <button onclick="autoSyncPending()">&#x1F4E4; 今すぐ送る</button>
-    </div>
     <div class="card">
       <div class="card-title">&#x1F464; スタッフ選択</div>
       <div class="punch-staff-grid" id="punchStaffGrid">
@@ -446,6 +441,11 @@ label:first-child { margin-top: 0; }
     <!-- 管理者ボタン（打刻ボタンの下） -->
     <div class="fab" id="fabArea">
       <button class="fab-lock" id="fabBtn" onclick="openPinModal()">&#x1F512; 管理者</button>
+    </div>
+    <div class="unsent-bar" id="unsentBar" style="margin-top:14px;">
+      <span id="unsentText"></span>
+      <span class="unsent-sub">この画面を開いたままにすると自動で送られます</span>
+      <button onclick="autoSyncPending(true)">&#x1F4E4; 今すぐ送る</button>
     </div>
     <div class="stale-notice" id="staleNotice" hidden></div>
   </div>
@@ -1537,8 +1537,38 @@ async function syncPending() {
 const AUTO_SYNC_DAYS  = 14;   // 自動送信する対象期間（これより古いものは扱わない）
 const AUTO_SYNC_LIMIT = 20;   // 1回で送る上限
 
+// ★14日より前の未送信は送らずに、「もうスプレッドシートに入っているか」だけ確かめる。
+//   入っていれば送信済みにする。入っていないものは残して、下の帯に件数を出し続ける
+//   （古い打刻で、手で直した時刻を上書きしないため送りはしない）。
+let _lastOldCheck = 0;
+async function reconcileOldUnsent(force) {
+  if (!force && Date.now() - _lastOldCheck < 10 * 60000) return;   // 10分に1回まで
+  _lastOldCheck = Date.now();
+  const url = loadWebAppUrl();
+  if (!url || !navigator.onLine) return;
+  const border = Date.now() - AUTO_SYNC_DAYS * 86400000;
+  const olds = loadRecords().filter(r => !r.synced && new Date(r.rawTime).getTime() < border).slice(0, 300);
+  if (!olds.length) return;
+  try {
+    const res = await fetch(url, {
+      method: 'POST', redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'checkPunches',
+        items: olds.map(r => ({ staffName: r.staffName, type: r.type, rawTime: r.rawTime })) })
+    });
+    const json = await res.json();
+    if (json.status !== 'ok' || !Array.isArray(json.exists)) return;
+    const done = new Set(olds.filter((r, i) => json.exists[i]).map(r => r.id));
+    if (!done.size) return;
+    saveRecords(loadRecords().map(r => done.has(r.id) ? Object.assign({}, r, { synced: true }) : r));
+    updateUnsentBar();
+    showToast(`✅ 古い記録 ${done.size}件は、もうスプレッドシートに入っていました`);
+  } catch (e) { /* 次の機会にまた確かめる */ }
+}
+
 let _autoSyncing = false;
-async function autoSyncPending() {
+async function autoSyncPending(force) {
+  reconcileOldUnsent(force === true);
   if (_autoSyncing) return;                 // 二重実行を防ぐ
   const url = loadWebAppUrl();
   if (!url || !navigator.onLine) return;
