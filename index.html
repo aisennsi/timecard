@@ -879,24 +879,14 @@ async function doPunch() {
           `${res.warn}。<br><br>このままだと勤務時間が計算されず、<br>お給料に反映されません。`);
       }
     } else {
-      // ① 送信できなかった場合の警告
-      //    打刻自体は端末に残っているので、「消えた」と誤解させないことが大事。
-      //    二重打刻を誘発するとデータが余計に壊れる。
-      // ★オフラインのときは何も出さない。
-      //   打刻は端末に保存され、ネットに戻れば自動で送られるので、
-      //   毎回警告を出すとスタッフを不必要に不安にさせるだけになる。
-      //   状態は画面上部の赤い帯とバッジ（消えずに残る）で分かる。
-      // ★電波はあるのに送れないときだけ大きく出す。
-      //   これはWiFiの問題ではなく、URLが変わった・上限に達した等の
-      //   システム側の異常で、放置すると全員の打刻が記録されない。
+      // ★送れなかったときは、大きな警告は出さない（2026-10-09 店長の判断）。
+      //   店のWi-Fiは弱く、「つながっているのに送れない」が毎日のように起きていた。
+      //   打刻は端末に保存され、1分ごとの自動送信で後から届く。
+      //   状態は画面上部の赤い帯（件数つき）とバッジで分かる。
+      //   システム側の異常（URL変更など）で何日も送れない場合は、
+      //   赤い帯が「1日以上送れていない…店長に報告」に変わって知らせる（updateUnsentBar）。
       setCloudBadge('offline', '⚠️ 未送信');
       updateUnsentBar();
-      if (navigator.onLine) {
-        showBigAlert('⚠️', '送信できませんでした',
-          '店長に報告してください。<br>' +
-          'ネットにつながっているのに記録を送れていません。' +
-          '<span class="sub">打刻はこの端末に保存されています</span>');
-      }
     }
   }
 }
@@ -915,9 +905,16 @@ function updateUnsentBar() {
   if (!bar) return;
   // Web App URL が未設定のときは「未送信」ではなく「連携していない」だけなので出さない
   if (!loadWebAppUrl()) { bar.classList.remove('show'); return; }
-  const n = loadRecords().filter(r => !r.synced).length;
+  const pend = loadRecords().filter(r => !r.synced)
+    .concat(loadMakanai().filter(m => !m.synced));
+  const n = pend.length;
   if (n > 0) {
-    document.getElementById('unsentText').textContent = `⚠️ まだ送れていない打刻が ${n}件 あります`;
+    // 一番古い未送信がいつのものか
+    const oldest = Math.min.apply(null, pend.map(r => new Date(r.rawTime || Date.now()).getTime()));
+    const stale  = (Date.now() - oldest) > 24 * 3600000;
+    document.getElementById('unsentText').textContent = stale
+      ? `⚠️ 1日以上送れていない記録があります（${n}件）。店長に報告してください`
+      : `⚠️ まだ送れていない記録が ${n}件 あります`;
     bar.classList.add('show');
   } else {
     bar.classList.remove('show');
@@ -1040,14 +1037,9 @@ async function confirmMakanai() {
     saveMakanai(loadMakanai().map(m => m.id === rec.id ? Object.assign({}, m, {synced:true}) : m));
     setCloudBadge('online', '☁️ 送信OK');
   } else {
-    // 打刻と同じ扱い。オフラインは黙って端末に残し、あとで自動送信する。
+    // 打刻と同じ扱い。大きな警告は出さず、端末に残して後から自動送信する。
     setCloudBadge('offline', '⚠️ 未送信');
-    if (navigator.onLine) {
-      showBigAlert('⚠️', '送信できませんでした',
-        '店長に報告してください。<br>' +
-        'ネットにつながっているのに記録を送れていません。' +
-        '<span class="sub">まかないの記録はこの端末に保存されています</span>');
-    }
+    updateUnsentBar();
   }
 }
 
